@@ -385,7 +385,7 @@ jobs:
             }
             }
             }
-EOF
+          EOF
       - uses: actions/setup-java@v4
         with:
           java-version: '25'
