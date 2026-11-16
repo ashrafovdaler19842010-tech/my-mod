@@ -1,377 +1,361 @@
 name: Build Mod
+
 on: [push]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o mod.zip || true
-      - name: Update Mod Code
+      - name: Configure fabric.mod.json and clean old sources
         run: |
           sed -i 's/"fabricloader": "[^"]*"/"fabricloader": ">=0.16.0"/g' src/main/resources/fabric.mod.json
-          cat << 'EOF' > src/client/java/com/example/client/TemplateModClient.java
-            package com.example.client;
+          rm -rf src/client/java/com/example/client/*
+          mkdir -p src/client/java/com/example/client
 
-            import com.google.gson.Gson;
-            import com.google.gson.GsonBuilder;
-            import com.mojang.blaze3d.platform.InputConstants;
-            import com.mojang.blaze3d.vertex.PoseStack;
-            import com.mojang.blaze3d.vertex.VertexConsumer;
-            import net.fabricmc.api.ClientModInitializer;
-            import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-            import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-            import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
-            import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
-            import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
-            import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
-            import net.fabricmc.loader.api.FabricLoader;
-            import net.minecraft.client.DeltaTracker;
-            import net.minecraft.client.KeyMapping;
-            import net.minecraft.client.Minecraft;
-            import net.minecraft.client.gui.GuiGraphics;
-            import net.minecraft.client.gui.components.Button;
-            import net.minecraft.client.gui.components.EditBox;
-            import net.minecraft.client.gui.screens.Screen;
-            import net.minecraft.client.player.LocalPlayer;
-            import net.minecraft.client.renderer.MultiBufferSource;
-            import net.minecraft.client.renderer.RenderType;
-            import net.minecraft.network.chat.Component;
-            import net.minecraft.resources.ResourceLocation;
-            import net.minecraft.world.entity.EquipmentSlot;
-            import net.minecraft.world.entity.player.Player;
-            import net.minecraft.world.phys.AABB;
-            import net.minecraft.world.phys.Vec3;
-            import org.joml.Matrix4f;
-            import org.lwjgl.glfw.GLFW;
+      - name: Write ModConfig.java
+        run: |
+          cat << 'EOF' > src/client/java/com/example/client/ModConfig.java
+          package com.example.client;
 
-            import java.io.File;
-            import java.io.FileReader;
-            import java.io.FileWriter;
+          import com.google.gson.Gson;
+          import com.google.gson.GsonBuilder;
+          import net.fabricmc.loader.api.FabricLoader;
 
-            public class TemplateModClient implements ClientModInitializer {
-                public static ModConfig config = new ModConfig();
-                private static KeyMapping toggleHudKey;
-                private static KeyMapping toggleHitboxKey;
-                private static KeyMapping menuKey;
-                private static final File CONFIG_FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "velocity_hud.json");
+          import java.io.File;
+          import java.io.FileReader;
+          import java.io.FileWriter;
 
-                public static class ModConfig {
-                    public boolean hudEnabled = true;
-                    public boolean hitboxEnabled = true;
-                    public int x = 10;
-                    public int y = 10;
-                    public int size = 12;
-                    public String upColor = "FF0000";
-                    public String fallColor = "FF69B4";
-                    public String idleColor = "FFFF00";
-                    public String hitboxColor = "00FFFF";
-                    public int hitboxAlpha = 80;
-                }
-                @Override
-                public void onInitializeClient() {
-                    loadConfig();
+          public class ModConfig {
+              private static final File CONFIG_FILE = new File(
+                      FabricLoader.getInstance().getConfigDir().toFile(),
+                      "sprint-esp.json"
+              );
 
-                    toggleHudKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
-                            "Toggle Square HUD",
-                            InputConstants.Type.KEYSYM,
-                            GLFW.GLFW_KEY_K,
-                            "Velocity & Hitbox Mod"
-                    ));
+              public enum ResetMode {
+                  W_TAP("W-TAP (Отпустить W)"),
+                  S_TAP("S-TAP (Нажать S)"),
+                  SPRINT_KEY("SPRINT (Сброс Ctrl)");
 
-                    toggleHitboxKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
-                            "Toggle Hitbox Fill",
-                            InputConstants.Type.KEYSYM,
-                            GLFW.GLFW_KEY_H,
-                            "Velocity & Hitbox Mod"
-                    ));
+                  public final String label;
+                  ResetMode(String label) { this.label = label; }
 
-                    menuKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
-                            "Open Mod Settings",
-                            InputConstants.Type.KEYSYM,
-                            GLFW.GLFW_KEY_RIGHT_SHIFT,
-                            "Velocity & Hitbox Mod"
-                    ));
+                  public ResetMode next() {
+                      ResetMode[] vals = values();
+                      return vals[(this.ordinal() + 1) % vals.length];
+                  }
+              }
 
-                    ClientTickEvents.END_CLIENT_TICK.register(client -> {
-                        while (toggleHudKey.consumeClick()) {
-                            config.hudEnabled = !config.hudEnabled;
-                            saveConfig();
-                            if (client.player != null) {
-                                client.player.displayClientMessage(
-                                        Component.literal(config.hudEnabled ? "Square: ON" : "Square: OFF"),
-                                        true
-                                );
-                            }
-                        }
-                        while (toggleHitboxKey.consumeClick()) {
-                            config.hitboxEnabled = !config.hitboxEnabled;
-                            saveConfig();
-                            if (client.player != null) {
-                                client.player.displayClientMessage(
-                                        Component.literal(config.hitboxEnabled ? "Hitbox Fill: ON" : "Hitbox Fill: OFF"),
-                                        true
-                                );
-                            }
-                        }
-                        while (menuKey.consumeClick()) {
-                            client.setScreen(new ModConfigScreen());
-                        }
-                    });
+              // Настройки SprintReset
+              public boolean sprintEnabled = true;
+              public boolean critOnly = true;
+              public boolean autoSprint = true;
+              public boolean showSprintHud = true;
+              public ResetMode currentMode = ResetMode.W_TAP;
+              public long startDelayMs = 15;
+              public long holdDurationMs = 55;
 
-                    HudElementRegistry.attachElementBefore(
-                            VanillaHudElements.CHAT,
-                            ResourceLocation.fromNamespaceAndPath("template-mod", "velocity_indicator"),
-                            TemplateModClient::renderHud
-                    );
+              // Настройки ESP (хитбоксы без лучей и без сквозного просвета)
+              public boolean hitboxEnabled = true;
+              public boolean hitboxOutline = true;
+              public String hitboxColor = "#00E5FF";
+              public int hitboxAlpha = 70;
 
-                    WorldRenderEvents.AFTER_ENTITIES.register(TemplateModClient::renderPlayerHitboxes);
-                }
+              // Настройки квадрата вертикальной скорости (Velocity HUD)
+              public boolean velocityHudEnabled = false;
+              public int velX = 10;
+              public int velY = 60;
+              public int velSize = 12;
+              public String upColor = "#FF5555";
+              public String fallColor = "#FF69B4";
+              public String idleColor = "#FFFF00";
 
-                private static void renderHud(GuiGraphics guiGraphics, DeltaTracker deltaTracker) {
-                    Minecraft client = Minecraft.getInstance();
-                    if (!config.hudEnabled || client.screen instanceof ModConfigScreen) return;
+              public static ModConfig INSTANCE = new ModConfig();
 
-                    LocalPlayer player = client.player;
-                    if (player == null) return;
+              public static void save() {
+                  try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
+                      new GsonBuilder().setPrettyPrinting().create().toJson(INSTANCE, writer);
+                  } catch (Exception ignored) {}
+              }
 
-                    double velocityY = player.getDeltaMovement().y;
-                    String hex;
+              public static void load() {
+                  if (CONFIG_FILE.exists()) {
+                      try (FileReader reader = new FileReader(CONFIG_FILE)) {
+                          ModConfig loaded = new Gson().fromJson(reader, ModConfig.class);
+                          if (loaded != null) {
+                              if (loaded.currentMode == null) loaded.currentMode = ResetMode.W_TAP;
+                              if (loaded.hitboxColor == null) loaded.hitboxColor = "#00E5FF";
+                              if (loaded.upColor == null) loaded.upColor = "#FF5555";
+                              if (loaded.fallColor == null) loaded.fallColor = "#FF69B4";
+                              if (loaded.idleColor == null) loaded.idleColor = "#FFFF00";
+                              INSTANCE = loaded;
+                          }
+                      } catch (Exception ignored) {}
+                  }
+              }
 
-                    if (velocityY > 0.01) {
-                        hex = config.upColor;
-                    } else if (velocityY < -0.08) {
-                        hex = config.fallColor;
-                    } else {
-                        hex = config.idleColor;
-                    }
+              public static int parseRgb(String hex) {
+                  try {
+                      String clean = hex.replace("#", "").trim();
+                      if (clean.length() == 6) {
+                          return Integer.parseInt(clean, 16);
+                      }
+                  } catch (Exception ignored) {}
+                  return 0x00E5FF;
+              }
 
-                    int color = parseHexColor(hex, 255);
-                    guiGraphics.fill(config.x, config.y, config.x + config.size, config.y + config.size, color);
-                }
-                private static void renderPlayerHitboxes(WorldRenderContext context) {
-                    if (!config.hitboxEnabled) return;
-                    Minecraft client = Minecraft.getInstance();
-                    if (client.level == null || client.player == null) return;
-
-                    Vec3 cameraPos = context.camera().getPosition();
-                    PoseStack poseStack = context.matrixStack();
-                    MultiBufferSource consumers = context.consumers();
-                    if (poseStack == null || consumers == null) return;
-
-                    int rgb = parseRgb(config.hitboxColor);
-                    float r = ((rgb >> 16) & 0xFF) / 255.0f;
-                    float g = ((rgb >> 8) & 0xFF) / 255.0f;
-                    float b = (rgb & 0xFF) / 255.0f;
-                    float a = Math.max(10, Math.min(255, config.hitboxAlpha)) / 255.0f;
-
-                    float tickDelta = context.tickCounter().getGameTimeDeltaPartialTick(true);
-                    VertexConsumer buffer = consumers.getBuffer(RenderType.debugFilledBox());
-
-                    for (Player target : client.level.players()) {
-                        if (target == client.player) continue;
-
-                        boolean hasArmor = !target.getItemBySlot(EquipmentSlot.HEAD).isEmpty()
-                                || !target.getItemBySlot(EquipmentSlot.CHEST).isEmpty()
-                                || !target.getItemBySlot(EquipmentSlot.LEGS).isEmpty()
-                                || !target.getItemBySlot(EquipmentSlot.FEET).isEmpty();
-
-                        if (target.isInvisible() && !hasArmor) continue;
-
-                        double lerpX = target.xo + (target.getX() - target.xo) * tickDelta;
-                        double lerpY = target.yo + (target.getY() - target.yo) * tickDelta;
-                        double lerpZ = target.zo + (target.getZ() - target.zo) * tickDelta;
-
-                        AABB box = target.getBoundingBox()
-                                .move(lerpX - target.getX(), lerpY - target.getY(), lerpZ - target.getZ())
-                                .move(-cameraPos.x, -cameraPos.y, -cameraPos.z);
-
-                        addFilledBox(buffer, poseStack.last().pose(), box, r, g, b, a);
-                    }
-                }
-
-                private static void addFilledBox(VertexConsumer buffer, Matrix4f mat, AABB box, float r, float g, float b, float a) {
-                    float minX = (float) box.minX;
-                    float minY = (float) box.minY;
-                    float minZ = (float) box.minZ;
-                    float maxX = (float) box.maxX;
-                    float maxY = (float) box.maxY;
-                    float maxZ = (float) box.maxZ;
-
-                    buffer.addVertex(mat, minX, minY, minZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, maxX, minY, minZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, maxX, minY, maxZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, minX, minY, maxZ).setColor(r, g, b, a);
-
-                    buffer.addVertex(mat, minX, maxY, minZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, minX, maxY, maxZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, maxX, maxY, maxZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, maxX, maxY, minZ).setColor(r, g, b, a);
-
-                    buffer.addVertex(mat, minX, minY, minZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, minX, maxY, minZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, maxX, maxY, minZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, maxX, minY, minZ).setColor(r, g, b, a);
-
-                    buffer.addVertex(mat, minX, minY, maxZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, maxX, minY, maxZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, maxX, maxY, maxZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, minX, maxY, maxZ).setColor(r, g, b, a);
-
-                    buffer.addVertex(mat, minX, minY, minZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, minX, minY, maxZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, minX, maxY, maxZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, minX, maxY, minZ).setColor(r, g, b, a);
-
-                    buffer.addVertex(mat, maxX, minY, minZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, maxX, maxY, minZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, maxX, maxY, maxZ).setColor(r, g, b, a);
-                    buffer.addVertex(mat, maxX, minY, maxZ).setColor(r, g, b, a);
-                }
-                public static int parseRgb(String hex) {
-                    try {
-                        String clean = hex.replace("#", "").trim();
-                        if (clean.length() == 6) {
-                            return Integer.parseInt(clean, 16);
-                        }
-                    } catch (Exception ignored) {}
-                    return 0xFFFFFF;
-                }
-
-                public static int parseHexColor(String hex, int alpha) {
-                    return ((alpha & 0xFF) << 24) | parseRgb(hex);
-                }
-
-                public static void saveConfig() {
-                    try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
-                        new GsonBuilder().setPrettyPrinting().create().toJson(config, writer);
-                    } catch (Exception ignored) {}
-                }
-
-                public static void loadConfig() {
-                    if (CONFIG_FILE.exists()) {
-                        try (FileReader reader = new FileReader(CONFIG_FILE)) {
-                            ModConfig loaded = new Gson().fromJson(reader, ModConfig.class);
-                            if (loaded != null) config = loaded;
-                        } catch (Exception ignored) {}
-                    }
-                }
-
-                public static class ModConfigScreen extends Screen {
-                    private boolean dragging = false;
-                    private int dragOffsetX = 0;
-                    private int dragOffsetY = 0;
-                    private EditBox upBox;
-                    private EditBox fallBox;
-                    private EditBox idleBox;
-                    private EditBox sizeBox;
-                    private EditBox hitboxColorBox;
-                    private EditBox hitboxAlphaBox;
-
-                    public ModConfigScreen() {
-                        super(Component.literal("Velocity & Hitbox Settings"));
-                    }
-
-                    @Override
-                    protected void init() {
-                        int centerX = this.width / 2;
-                        int startY = this.height / 2 - 70;
-
-                        upBox = new EditBox(this.font, centerX - 30, startY, 90, 18, Component.literal("Up Color"));
-                        upBox.setValue(config.upColor);
-                        this.addRenderableWidget(upBox);
-
-                        fallBox = new EditBox(this.font, centerX - 30, startY + 24, 90, 18, Component.literal("Fall Color"));
-                        fallBox.setValue(config.fallColor);
-                        this.addRenderableWidget(fallBox);
-
-                        idleBox = new EditBox(this.font, centerX - 30, startY + 48, 90, 18, Component.literal("Idle Color"));
-                        idleBox.setValue(config.idleColor);
-                        this.addRenderableWidget(idleBox);
-
-                        sizeBox = new EditBox(this.font, centerX - 30, startY + 72, 90, 18, Component.literal("Square Size"));
-                        sizeBox.setValue(String.valueOf(config.size));
-                        this.addRenderableWidget(sizeBox);
-
-                        hitboxColorBox = new EditBox(this.font, centerX - 30, startY + 96, 90, 18, Component.literal("Hitbox Color"));
-                        hitboxColorBox.setValue(config.hitboxColor);
-                        this.addRenderableWidget(hitboxColorBox);
-
-                        hitboxAlphaBox = new EditBox(this.font, centerX - 30, startY + 120, 90, 18, Component.literal("Hitbox Alpha"));
-                        hitboxAlphaBox.setValue(String.valueOf(config.hitboxAlpha));
-                        this.addRenderableWidget(hitboxAlphaBox);
-
-                        this.addRenderableWidget(Button.builder(Component.literal("Save & Close"), btn -> {
-                            config.upColor = upBox.getValue();
-                            config.fallColor = fallBox.getValue();
-                            config.idleColor = idleBox.getValue();
-                            config.hitboxColor = hitboxColorBox.getValue();
-                            try {
-                                config.size = Math.max(2, Math.min(100, Integer.parseInt(sizeBox.getValue().trim())));
-                            } catch (Exception ignored) {}
-                            try {
-                                config.hitboxAlpha = Math.max(10, Math.min(255, Integer.parseInt(hitboxAlphaBox.getValue().trim())));
-                            } catch (Exception ignored) {}
-                            saveConfig();
-                            this.onClose();
-                        }).bounds(centerX - 45, startY + 148, 100, 20).build());
-                    }
-
-                    @Override
-                    public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
-                        this.renderBackground(guiGraphics, mouseX, mouseY, partialTick);
-                        super.render(guiGraphics, mouseX, mouseY, partialTick);
-
-                        int centerX = this.width / 2;
-                        int startY = this.height / 2 - 70;
-
-                        guiGraphics.drawCenteredString(this.font, "Drag square with mouse! (HEX colors)", centerX, startY - 22, 0xFFFFFF);
-                        guiGraphics.drawString(this.font, "Up (Jump):", centerX - 115, startY + 5, 0xFF5555);
-                        guiGraphics.drawString(this.font, "Fall:", centerX - 115, startY + 29, 0xFF69B4);
-                        guiGraphics.drawString(this.font, "Idle:", centerX - 115, startY + 53, 0xFFFF00);
-                        guiGraphics.drawString(this.font, "Size (px):", centerX - 115, startY + 77, 0xAAAAAA);
-                        guiGraphics.drawString(this.font, "Hitbox HEX:", centerX - 115, startY + 101, 0x00FFFF);
-                        guiGraphics.drawString(this.font, "Alpha (10-255):", centerX - 115, startY + 125, 0xAAAAAA);
-
-                        int previewColor = parseHexColor(idleBox.getValue(), 255);
-                        guiGraphics.fill(config.x, config.y, config.x + config.size, config.y + config.size, previewColor);
-                        guiGraphics.renderOutline(config.x - 1, config.y - 1, config.size + 2, config.size + 2, 0xFFFFFFFF);
-                    }
-
-                    @Override
-                    public boolean mouseClicked(double mouseX, double mouseY, int button) {
-                        if (button == 0 && mouseX >= config.x && mouseX <= config.x + config.size && mouseY >= config.y && mouseY <= config.y + config.size) {
-                            dragging = true;
-                            dragOffsetX = (int) mouseX - config.x;
-                            dragOffsetY = (int) mouseY - config.y;
-                            return true;
-                        }
-                        return super.mouseClicked(mouseX, mouseY, button);
-                    }
-
-                    @Override
-                    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
-                        if (dragging) {
-                            config.x = (int) mouseX - dragOffsetX;
-                            config.y = (int) mouseY - dragOffsetY;
-                            return true;
-                        }
-                        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
-                    }
-
-                    @Override
-                    public boolean mouseReleased(double mouseX, double mouseY, int button) {
-                        dragging = false;
-                        return super.mouseReleased(mouseX, mouseY, button);
-                    }
-                }
-            }
+              public static int parseHexColor(String hex, int alpha) {
+                  return ((alpha & 0xFF) << 24) | parseRgb(hex);
+              }
+          }
           EOF
+                - name: Write ModConfigScreen.java
+        run: |
+          cat << 'EOF' > src/client/java/com/example/client/ModConfigScreen.java
+          package com.example.client;
+
+          import net.minecraft.client.gui.GuiGraphics;
+          import net.minecraft.client.gui.components.AbstractSliderButton;
+          import net.minecraft.client.gui.components.Button;
+          import net.minecraft.client.gui.components.EditBox;
+          import net.minecraft.client.gui.screens.Screen;
+          import net.minecraft.network.chat.Component;
+
+          import java.util.function.LongConsumer;
+
+          public class ModConfigScreen extends Screen {
+              private int activeTab = 0; // 0 = SprintReset, 1 = ESP & HUD
+              private boolean dragging = false;
+              private int dragOffsetX = 0;
+              private int dragOffsetY = 0;
+
+              private EditBox hitboxColorBox;
+              private EditBox hitboxAlphaBox;
+              private EditBox upBox;
+              private EditBox fallBox;
+              private EditBox idleBox;
+              private EditBox sizeBox;
+
+              public ModConfigScreen() {
+                  super(Component.literal("Mod Settings"));
+              }
+
+              @Override
+              protected void init() {
+                  this.clearWidgets();
+                  ModConfig cfg = ModConfig.INSTANCE;
+                  int panelW = 240;
+                  int panelH = 205;
+                  int x = (this.width - panelW) / 2;
+                  int y = (this.height - panelH) / 2;
+                  int btnW = panelW - 24;
+                  int btnX = x + 12;
+
+                  // Вкладки сверху
+                  int tabW = (btnW - 4) / 2;
+                  this.addRenderableWidget(Button.builder(
+                          Component.literal(activeTab == 0 ? "§b§l[ SprintReset ]" : "§7SprintReset"),
+                          b -> { activeTab = 0; this.init(); }
+                  ).bounds(btnX, y + 24, tabW, 18).build());
+
+                  this.addRenderableWidget(Button.builder(
+                          Component.literal(activeTab == 1 ? "§b§l[ ESP & HUD ]" : "§7ESP & HUD"),
+                          b -> { activeTab = 1; this.init(); }
+                  ).bounds(btnX + tabW + 4, y + 24, tabW, 18).build());
+
+                  if (activeTab == 0) {
+                      this.addRenderableWidget(Button.builder(
+                              Component.literal("Сброс спринта: " + (cfg.sprintEnabled ? "§aВКЛ" : "§cВЫКЛ")),
+                              b -> { cfg.sprintEnabled = !cfg.sprintEnabled; ModConfig.save(); this.init(); }
+                      ).bounds(btnX, y + 48, btnW, 20).build());
+
+                      this.addRenderableWidget(Button.builder(
+                              Component.literal("Только при крите: " + (cfg.critOnly ? "§aВКЛ" : "§cВЫКЛ")),
+                              b -> { cfg.critOnly = !cfg.critOnly; ModConfig.save(); this.init(); }
+                      ).bounds(btnX, y + 71, btnW, 20).build());
+
+                      this.addRenderableWidget(Button.builder(
+                              Component.literal("Режим: §b" + cfg.currentMode.label),
+                              b -> { cfg.currentMode = cfg.currentMode.next(); ModConfig.save(); this.init(); }
+                      ).bounds(btnX, y + 94, btnW, 20).build());
+
+                      this.addRenderableWidget(new MsSlider(btnX, y + 117, btnW, 20, "Задержка до сброса", 0, 150, cfg.startDelayMs,
+                              val -> { cfg.startDelayMs = val; ModConfig.save(); }));
+
+                      this.addRenderableWidget(new MsSlider(btnX, y + 140, btnW, 20, "Время остановки", 10, 200, cfg.holdDurationMs,
+                              val -> { cfg.holdDurationMs = val; ModConfig.save(); }));
+
+                      this.addRenderableWidget(Button.builder(
+                              Component.literal("Авто-бег: " + (cfg.autoSprint ? "§aВКЛ" : "§cВЫКЛ") + " §7| HUD: " + (cfg.showSprintHud ? "§aВКЛ" : "§cВЫКЛ")),
+                              b -> {
+                                  if (!cfg.autoSprint && !cfg.showSprintHud) cfg.autoSprint = true;
+                                  else if (cfg.autoSprint && !cfg.showSprintHud) cfg.showSprintHud = true;
+                                  else if (cfg.autoSprint) cfg.autoSprint = false;
+                                  else cfg.showSprintHud = false;
+                                  ModConfig.save();
+                                  this.init();
+                              }
+                      ).bounds(btnX, y + 163, btnW, 20).build());
+                  }
+                                    else {
+                      this.addRenderableWidget(Button.builder(
+                              Component.literal("ESP Боксы: " + (cfg.hitboxEnabled ? "§aВКЛ" : "§cВЫКЛ") + " §7| Обводка: " + (cfg.hitboxOutline ? "§aВКЛ" : "§cВЫКЛ")),
+                              b -> {
+                                  if (!cfg.hitboxEnabled) { cfg.hitboxEnabled = true; cfg.hitboxOutline = true; }
+                                  else if (cfg.hitboxOutline) cfg.hitboxOutline = false;
+                                  else cfg.hitboxEnabled = false;
+                                  ModConfig.save();
+                                  this.init();
+                              }
+                      ).bounds(btnX, y + 48, btnW, 20).build());
+
+                      hitboxColorBox = new EditBox(this.font, btnX + 75, y + 72, 65, 18, Component.literal("HEX"));
+                      hitboxColorBox.setValue(cfg.hitboxColor);
+                      this.addRenderableWidget(hitboxColorBox);
+
+                      hitboxAlphaBox = new EditBox(this.font, btnX + 175, y + 72, 41, 18, Component.literal("Alpha"));
+                      hitboxAlphaBox.setValue(String.valueOf(cfg.hitboxAlpha));
+                      this.addRenderableWidget(hitboxAlphaBox);
+
+                      this.addRenderableWidget(Button.builder(
+                              Component.literal("Квадрат скорости (HUD): " + (cfg.velocityHudEnabled ? "§aВКЛ" : "§cВЫКЛ")),
+                              b -> { cfg.velocityHudEnabled = !cfg.velocityHudEnabled; ModConfig.save(); this.init(); }
+                      ).bounds(btnX, y + 95, btnW, 20).build());
+
+                      upBox = new EditBox(this.font, btnX + 42, y + 119, 62, 18, Component.literal("Up"));
+                      upBox.setValue(cfg.upColor);
+                      this.addRenderableWidget(upBox);
+
+                      fallBox = new EditBox(this.font, btnX + 154, y + 119, 62, 18, Component.literal("Fall"));
+                      fallBox.setValue(cfg.fallColor);
+                      this.addRenderableWidget(fallBox);
+
+                      idleBox = new EditBox(this.font, btnX + 42, y + 141, 62, 18, Component.literal("Idle"));
+                      idleBox.setValue(cfg.idleColor);
+                      this.addRenderableWidget(idleBox);
+
+                      sizeBox = new EditBox(this.font, btnX + 154, y + 141, 62, 18, Component.literal("Size"));
+                      sizeBox.setValue(String.valueOf(cfg.velSize));
+                      this.addRenderableWidget(sizeBox);
+
+                      this.addRenderableWidget(Button.builder(Component.literal("§aСохранить цвета и размеры"), b -> {
+                          cfg.hitboxColor = hitboxColorBox.getValue();
+                          cfg.upColor = upBox.getValue();
+                          cfg.fallColor = fallBox.getValue();
+                          cfg.idleColor = idleBox.getValue();
+                          try { cfg.hitboxAlpha = Math.max(10, Math.min(255, Integer.parseInt(hitboxAlphaBox.getValue().trim()))); } catch (Exception ignored) {}
+                          try { cfg.velSize = Math.max(4, Math.min(80, Integer.parseInt(sizeBox.getValue().trim()))); } catch (Exception ignored) {}
+                          ModConfig.save();
+                      }).bounds(btnX, y + 164, btnW, 20).build());
+                  }
+              }
+
+              @Override
+              public void render(GuiGraphics g, int mouseX, int mouseY, float delta) {
+                  this.renderBackground(g, mouseX, mouseY, delta);
+                  ModConfig cfg = ModConfig.INSTANCE;
+                  int panelW = 240, panelH = 205;
+                  int x = (this.width - panelW) / 2, y = (this.height - panelH) / 2;
+
+                  g.fill(x - 1, y - 1, x + panelW + 1, y + panelH + 1, 0xFF00E5FF);
+                  g.fill(x, y, x + panelW, y + panelH, 0xE612151E);
+                  g.drawCenteredString(this.font, "§b§lSprintReset & ESP §f| Настройки", x + panelW / 2, y + 8, 0xFFFFFF);
+
+                  super.render(g, mouseX, mouseY, delta);
+
+                  if (activeTab == 1) {
+                      int btnX = x + 12;
+                      g.drawString(this.font, "Цвет HEX:", btnX, y + 77, 0xCCCCCC, false);
+                      g.drawString(this.font, "Прозр:", btnX + 143, y + 77, 0xCCCCCC, false);
+                      g.drawString(this.font, "Прыж:", btnX, y + 124, 0xFF5555, false);
+                      g.drawString(this.font, "Паден:", btnX + 112, y + 124, 0xFF69B4, false);
+                      g.drawString(this.font, "Стоит:", btnX, y + 146, 0xFFFF00, false);
+                      g.drawString(this.font, "Размер:", btnX + 112, y + 146, 0xAAAAAA, false);
+
+                      if (cfg.velocityHudEnabled) {
+                          int preview = ModConfig.parseHexColor(idleBox.getValue(), 255);
+                          g.fill(cfg.velX, cfg.velY, cfg.velX + cfg.velSize, cfg.velY + cfg.velSize, preview);
+                          g.renderOutline(cfg.velX - 1, cfg.velY - 1, cfg.velSize + 2, cfg.velSize + 2, 0xFFFFFFFF);
+                      }
+                  }
+              }
+
+              @Override
+              public boolean mouseClicked(double mouseX, double mouseY, int button) {
+                  ModConfig cfg = ModConfig.INSTANCE;
+                  if (activeTab == 1 && cfg.velocityHudEnabled && button == 0
+                          && mouseX >= cfg.velX && mouseX <= cfg.velX + cfg.velSize
+                          && mouseY >= cfg.velY && mouseY <= cfg.velY + cfg.velSize) {
+                      dragging = true;
+                      dragOffsetX = (int) mouseX - cfg.velX;
+                      dragOffsetY = (int) mouseY - cfg.velY;
+                      return true;
+                  }
+                  return super.mouseClicked(mouseX, mouseY, button);
+              }
+
+              @Override
+              public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+                  if (dragging) {
+                      ModConfig.INSTANCE.velX = (int) mouseX - dragOffsetX;
+                      ModConfig.INSTANCE.velY = (int) mouseY - dragOffsetY;
+                      return true;
+                  }
+                  return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+              }
+
+              @Override
+              public boolean mouseReleased(double mouseX, double mouseY, int button) {
+                  if (dragging) {
+                      dragging = false;
+                      ModConfig.save();
+                  }
+                  return super.mouseReleased(mouseX, mouseY, button);
+              }
+
+              @Override
+              public boolean isPauseScreen() {
+                  return false;
+              }
+
+              private static class MsSlider extends AbstractSliderButton {
+                  private final String prefix;
+                  private final long min, max;
+                  private final LongConsumer onChange;
+
+                  public MsSlider(int x, int y, int w, int h, String prefix, long min, long max, long cur, LongConsumer onChange) {
+                      super(x, y, w, h, Component.empty(), (double) (cur - min) / (max - min));
+                      this.prefix = prefix;
+                      this.min = min;
+                      this.max = max;
+                      this.onChange = onChange;
+                      this.updateMessage();
+                  }
+
+                  @Override
+                  protected void updateMessage() {
+                      long val = Math.round(min + (max - min) * this.value);
+                      this.setMessage(Component.literal(prefix + ": §e" + val + " мс"));
+                  }
+
+                  @Override
+                  protected void applyValue() {
+                      long val = Math.round(min + (max - min) * this.value);
+                      onChange.accept(val);
+                  }
+              }
+          }
+          EOF
+
       - uses: actions/setup-java@v4
         with:
-          java-version: '25'
+          java-version: '21'
           distribution: 'temurin'
       - run: chmod +x gradlew && ./gradlew build
       - uses: actions/upload-artifact@v4
         with:
           name: gotoviy-mod
           path: build/libs/template-mod-1.0.0.jar
+
+
