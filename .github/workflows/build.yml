@@ -10,381 +10,381 @@ jobs:
         run: |
           sed -i 's/"fabricloader": "[^"]*"/"fabricloader": ">=0.16.0"/g' src/main/resources/fabric.mod.json
           cat << 'EOF' > src/client/java/com/example/client/TemplateModClient.java
-package com.example.client;
-
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.mojang.blaze3d.platform.InputConstants;
-import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.vertex.*;
-import net.fabricmc.api.ClientModInitializer;
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
-import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
-import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
-import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.client.DeltaTracker;
-import net.minecraft.client.KeyMapping;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.Button;
-import net.minecraft.client.gui.components.EditBox;
-import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.player.LocalPlayer;
-import net.minecraft.client.renderer.CoreShaders;
-import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.entity.EquipmentSlot;
-import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.Vec3;
-import org.joml.Matrix4f;
-import org.lwjgl.glfw.GLFW;
-
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-
-public class TemplateModClient implements ClientModInitializer {
-public static ModConfig config = new ModConfig();
-private static KeyMapping toggleHudKey;
-private static KeyMapping toggleHitboxKey;
-private static KeyMapping menuKey;
-private static final File CONFIG_FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "velocity_hud.json");
-
-public static class ModConfig {
-public boolean hudEnabled = true;
-public boolean hitboxEnabled = true;
-public int x = 10;
-public int y = 10;
-public int size = 12;
-public String upColor = "FF0000";
-public String fallColor = "FF69B4";
-public String idleColor = "FFFF00";
-public String hitboxColor = "00FFFF";
-public int hitboxAlpha = 80;
-}
-@Override
-public void onInitializeClient() {
-loadConfig();
-
-toggleHudKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
-"Toggle Square HUD",
-InputConstants.Type.KEYSYM,
-GLFW.GLFW_KEY_K,
-"Velocity & Hitbox Mod"
-));
-
-toggleHitboxKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
-"Toggle Hitbox Fill",
-InputConstants.Type.KEYSYM,
-GLFW.GLFW_KEY_H,
-"Velocity & Hitbox Mod"
-));
-
-menuKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
-"Open Mod Settings",
-InputConstants.Type.KEYSYM,
-GLFW.GLFW_KEY_RIGHT_SHIFT,
-"Velocity & Hitbox Mod"
-));
-
-ClientTickEvents.END_CLIENT_TICK.register(client -> {
-while (toggleHudKey.consumeClick()) {
-config.hudEnabled = !config.hudEnabled;
-saveConfig();
-if (client.player != null) {
-client.player.displayClientMessage(
-Component.literal(config.hudEnabled ? "Square: ON" : "Square: OFF"),
-true
-);
-}
-}
-while (toggleHitboxKey.consumeClick()) {
-config.hitboxEnabled = !config.hitboxEnabled;
-saveConfig();
-if (client.player != null) {
-client.player.displayClientMessage(
-Component.literal(config.hitboxEnabled ? "Hitbox Fill: ON" : "Hitbox Fill: OFF"),
-true
-);
-}
-}
-while (menuKey.consumeClick()) {
-client.setScreen(new ModConfigScreen());
-}
-});
-
-HudElementRegistry.attachElementBefore(
-VanillaHudElements.CHAT,
-ResourceLocation.fromNamespaceAndPath("template-mod", "velocity_indicator"),
-TemplateModClient::renderHud
-);
-
-WorldRenderEvents.AFTER_ENTITIES.register(TemplateModClient::renderPlayerHitboxes);
-}
-
-private static void renderHud(GuiGraphics guiGraphics, DeltaTracker deltaTracker) {
-Minecraft client = Minecraft.getInstance();
-if (!config.hudEnabled || client.screen instanceof ModConfigScreen) return;
-
-LocalPlayer player = client.player;
-if (player == null) return;
-
-double velocityY = player.getDeltaMovement().y;
-String hex;
-
-if (velocityY > 0.01) {
-hex = config.upColor;
-} else if (velocityY < -0.08) {
-hex = config.fallColor;
-} else {
-hex = config.idleColor;
-}
-
-int color = parseHexColor(hex, 255);
-guiGraphics.fill(config.x, config.y, config.x + config.size, config.y + config.size, color);
-}
-private static void renderPlayerHitboxes(WorldRenderContext context) {
-if (!config.hitboxEnabled) return;
-Minecraft client = Minecraft.getInstance();
-if (client.level == null || client.player == null) return;
-
-Vec3 cameraPos = context.camera().getPosition();
-PoseStack poseStack = context.matrixStack();
-if (poseStack == null) return;
-
-int rgb = parseRgb(config.hitboxColor);
-float r = ((rgb >> 16) & 0xFF) / 255.0f;
-float g = ((rgb >> 8) & 0xFF) / 255.0f;
-float b = (rgb & 0xFF) / 255.0f;
-float a = Math.max(0, Math.min(255, config.hitboxAlpha)) / 255.0f;
-
-float tickDelta = context.tickCounter().getGameTimeDeltaPartialTick(true);
-
-RenderSystem.enableBlend();
-RenderSystem.defaultBlendFunc();
-RenderSystem.enableDepthTest();
-RenderSystem.depthMask(false);
-RenderSystem.disableCull();
-RenderSystem.setShader(CoreShaders.POSITION_COLOR);
-
-Tesselator tesselator = Tesselator.getInstance();
-BufferBuilder buffer = tesselator.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
-boolean hasVertices = false;
-
-for (Player target : client.level.players()) {
-if (target == client.player) continue;
-
-boolean hasArmor = !target.getItemBySlot(EquipmentSlot.HEAD).isEmpty()
-|| !target.getItemBySlot(EquipmentSlot.CHEST).isEmpty()
-|| !target.getItemBySlot(EquipmentSlot.LEGS).isEmpty()
-|| !target.getItemBySlot(EquipmentSlot.FEET).isEmpty();
-
-if (target.isInvisible() && !hasArmor) continue;
-
-double lerpX = target.xo + (target.getX() - target.xo) * tickDelta;
-double lerpY = target.yo + (target.getY() - target.yo) * tickDelta;
-double lerpZ = target.zo + (target.getZ() - target.zo) * tickDelta;
-
-AABB box = target.getBoundingBox()
-.move(lerpX - target.getX(), lerpY - target.getY(), lerpZ - target.getZ())
-.move(-cameraPos.x, -cameraPos.y, -cameraPos.z);
-
-addFilledBox(buffer, poseStack.last().pose(), box, r, g, b, a);
-hasVertices = true;
-}
-
-if (hasVertices) {
-MeshData meshData = buffer.build();
-if (meshData != null) {
-BufferUploader.drawWithShader(meshData);
-}
-}
-
-RenderSystem.enableCull();
-RenderSystem.depthMask(true);
-RenderSystem.disableBlend();
-}
-
-private static void addFilledBox(BufferBuilder buffer, Matrix4f mat, AABB box, float r, float g, float b, float a) {
-float minX = (float) box.minX;
-float minY = (float) box.minY;
-float minZ = (float) box.minZ;
-float maxX = (float) box.maxX;
-float maxY = (float) box.maxY;
-float maxZ = (float) box.maxZ;
-
-buffer.addVertex(mat, minX, minY, minZ).setColor(r, g, b, a);
-buffer.addVertex(mat, maxX, minY, minZ).setColor(r, g, b, a);
-buffer.addVertex(mat, maxX, minY, maxZ).setColor(r, g, b, a);
-buffer.addVertex(mat, minX, minY, maxZ).setColor(r, g, b, a);
-
-buffer.addVertex(mat, minX, maxY, minZ).setColor(r, g, b, a);
-buffer.addVertex(mat, minX, maxY, maxZ).setColor(r, g, b, a);
-buffer.addVertex(mat, maxX, maxY, maxZ).setColor(r, g, b, a);
-buffer.addVertex(mat, maxX, maxY, minZ).setColor(r, g, b, a);
-
-buffer.addVertex(mat, minX, minY, minZ).setColor(r, g, b, a);
-buffer.addVertex(mat, minX, maxY, minZ).setColor(r, g, b, a);
-buffer.addVertex(mat, maxX, maxY, minZ).setColor(r, g, b, a);
-buffer.addVertex(mat, maxX, minY, minZ).setColor(r, g, b, a);
-
-buffer.addVertex(mat, minX, minY, maxZ).setColor(r, g, b, a);
-buffer.addVertex(mat, maxX, minY, maxZ).setColor(r, g, b, a);
-buffer.addVertex(mat, maxX, maxY, maxZ).setColor(r, g, b, a);
-buffer.addVertex(mat, minX, maxY, maxZ).setColor(r, g, b, a);
-
-buffer.addVertex(mat, minX, minY, minZ).setColor(r, g, b, a);
-buffer.addVertex(mat, minX, minY, maxZ).setColor(r, g, b, a);
-buffer.addVertex(mat, minX, maxY, maxZ).setColor(r, g, b, a);
-buffer.addVertex(mat, minX, maxY, minZ).setColor(r, g, b, a);
-
-buffer.addVertex(mat, maxX, minY, minZ).setColor(r, g, b, a);
-buffer.addVertex(mat, maxX, maxY, minZ).setColor(r, g, b, a);
-buffer.addVertex(mat, maxX, maxY, maxZ).setColor(r, g, b, a);
-buffer.addVertex(mat, maxX, minY, maxZ).setColor(r, g, b, a);
-}
-public static int parseRgb(String hex) {
-try {
-String clean = hex.replace("#", "").trim();
-if (clean.length() == 6) {
-return Integer.parseInt(clean, 16);
-}
-} catch (Exception ignored) {}
-return 0xFFFFFF;
-}
-
-public static int parseHexColor(String hex, int alpha) {
-return ((alpha & 0xFF) << 24) | parseRgb(hex);
-}
-
-public static void saveConfig() {
-try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
-new GsonBuilder().setPrettyPrinting().create().toJson(config, writer);
-} catch (Exception ignored) {}
-}
-
-public static void loadConfig() {
-if (CONFIG_FILE.exists()) {
-try (FileReader reader = new FileReader(CONFIG_FILE)) {
-ModConfig loaded = new Gson().fromJson(reader, ModConfig.class);
-if (loaded != null) config = loaded;
-} catch (Exception ignored) {}
-}
-}
-
-public static class ModConfigScreen extends Screen {
-private boolean dragging = false;
-private int dragOffsetX = 0;
-private int dragOffsetY = 0;
-private EditBox upBox;
-private EditBox fallBox;
-private EditBox idleBox;
-private EditBox sizeBox;
-private EditBox hitboxColorBox;
-private EditBox hitboxAlphaBox;
-
-public ModConfigScreen() {
-super(Component.literal("Velocity & Hitbox Settings"));
-}
-
-@Override
-protected void init() {
-int centerX = this.width / 2;
-int startY = this.height / 2 - 70;
-
-upBox = new EditBox(this.font, centerX - 30, startY, 90, 18, Component.literal("Up Color"));
-upBox.setValue(config.upColor);
-this.addRenderableWidget(upBox);
-
-fallBox = new EditBox(this.font, centerX - 30, startY + 24, 90, 18, Component.literal("Fall Color"));
-fallBox.setValue(config.fallColor);
-this.addRenderableWidget(fallBox);
-
-idleBox = new EditBox(this.font, centerX - 30, startY + 48, 90, 18, Component.literal("Idle Color"));
-idleBox.setValue(config.idleColor);
-this.addRenderableWidget(idleBox);
-
-sizeBox = new EditBox(this.font, centerX - 30, startY + 72, 90, 18, Component.literal("Square Size"));
-sizeBox.setValue(String.valueOf(config.size));
-this.addRenderableWidget(sizeBox);
-
-hitboxColorBox = new EditBox(this.font, centerX - 30, startY + 96, 90, 18, Component.literal("Hitbox Color"));
-hitboxColorBox.setValue(config.hitboxColor);
-this.addRenderableWidget(hitboxColorBox);
-
-hitboxAlphaBox = new EditBox(this.font, centerX - 30, startY + 120, 90, 18, Component.literal("Hitbox Alpha"));
-hitboxAlphaBox.setValue(String.valueOf(config.hitboxAlpha));
-this.addRenderableWidget(hitboxAlphaBox);
-
-this.addRenderableWidget(Button.builder(Component.literal("Save & Close"), btn -> {
-config.upColor = upBox.getValue();
-config.fallColor = fallBox.getValue();
-config.idleColor = idleBox.getValue();
-config.hitboxColor = hitboxColorBox.getValue();
-try {
-config.size = Math.max(2, Math.min(100, Integer.parseInt(sizeBox.getValue().trim())));
-} catch (Exception ignored) {}
-try {
-config.hitboxAlpha = Math.max(10, Math.min(255, Integer.parseInt(hitboxAlphaBox.getValue().trim())));
-} catch (Exception ignored) {}
-saveConfig();
-this.onClose();
-}).bounds(centerX - 45, startY + 148, 100, 20).build());
-}
-
-@Override
-public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
-this.renderBackground(guiGraphics, mouseX, mouseY, partialTick);
-super.render(guiGraphics, mouseX, mouseY, partialTick);
-
-int centerX = this.width / 2;
-int startY = this.height / 2 - 70;
-
-guiGraphics.drawCenteredString(this.font, "Drag square with mouse! (HEX colors)", centerX, startY - 22, 0xFFFFFF);
-guiGraphics.drawString(this.font, "Up (Jump):", centerX - 115, startY + 5, 0xFF5555);
-guiGraphics.drawString(this.font, "Fall:", centerX - 115, startY + 29, 0xFF69B4);
-guiGraphics.drawString(this.font, "Idle:", centerX - 115, startY + 53, 0xFFFF00);
-guiGraphics.drawString(this.font, "Size (px):", centerX - 115, startY + 77, 0xAAAAAA);
-guiGraphics.drawString(this.font, "Hitbox HEX:", centerX - 115, startY + 101, 0x00FFFF);
-guiGraphics.drawString(this.font, "Alpha (10-255):", centerX - 115, startY + 125, 0xAAAAAA);
-
-int previewColor = parseHexColor(idleBox.getValue(), 255);
-guiGraphics.fill(config.x, config.y, config.x + config.size, config.y + config.size, previewColor);
-guiGraphics.renderOutline(config.x - 1, config.y - 1, config.size + 2, config.size + 2, 0xFFFFFFFF);
-}
-
-@Override
-public boolean mouseClicked(double mouseX, double mouseY, int button) {
-if (button == 0 && mouseX >= config.x && mouseX <= config.x + config.size && mouseY >= config.y && mouseY <= config.y + config.size) {
-dragging = true;
-dragOffsetX = (int) mouseX - config.x;
-dragOffsetY = (int) mouseY - config.y;
-return true;
-}
-return super.mouseClicked(mouseX, mouseY, button);
-}
-
-@Override
-public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
-if (dragging) {
-config.x = (int) mouseX - dragOffsetX;
-config.y = (int) mouseY - dragOffsetY;
-return true;
-}
-return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
-}
-
-@Override
-public boolean mouseReleased(double mouseX, double mouseY, int button) {
-dragging = false;
-return super.mouseReleased(mouseX, mouseY, button);
-}
-}
-}
+            package com.example.client;
+            
+            import com.google.gson.Gson;
+            import com.google.gson.GsonBuilder;
+            import com.mojang.blaze3d.platform.InputConstants;
+            import com.mojang.blaze3d.systems.RenderSystem;
+            import com.mojang.blaze3d.vertex.*;
+            import net.fabricmc.api.ClientModInitializer;
+            import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+            import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+            import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
+            import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+            import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+            import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
+            import net.fabricmc.loader.api.FabricLoader;
+            import net.minecraft.client.DeltaTracker;
+            import net.minecraft.client.KeyMapping;
+            import net.minecraft.client.Minecraft;
+            import net.minecraft.client.gui.GuiGraphics;
+            import net.minecraft.client.gui.components.Button;
+            import net.minecraft.client.gui.components.EditBox;
+            import net.minecraft.client.gui.screens.Screen;
+            import net.minecraft.client.player.LocalPlayer;
+            import net.minecraft.client.renderer.CoreShaders;
+            import net.minecraft.network.chat.Component;
+            import net.minecraft.resources.ResourceLocation;
+            import net.minecraft.world.entity.EquipmentSlot;
+            import net.minecraft.world.entity.player.Player;
+            import net.minecraft.world.phys.AABB;
+            import net.minecraft.world.phys.Vec3;
+            import org.joml.Matrix4f;
+            import org.lwjgl.glfw.GLFW;
+            
+            import java.io.File;
+            import java.io.FileReader;
+            import java.io.FileWriter;
+            
+            public class TemplateModClient implements ClientModInitializer {
+            public static ModConfig config = new ModConfig();
+            private static KeyMapping toggleHudKey;
+            private static KeyMapping toggleHitboxKey;
+            private static KeyMapping menuKey;
+            private static final File CONFIG_FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "velocity_hud.json");
+            
+            public static class ModConfig {
+            public boolean hudEnabled = true;
+            public boolean hitboxEnabled = true;
+            public int x = 10;
+            public int y = 10;
+            public int size = 12;
+            public String upColor = "FF0000";
+            public String fallColor = "FF69B4";
+            public String idleColor = "FFFF00";
+            public String hitboxColor = "00FFFF";
+            public int hitboxAlpha = 80;
+            }
+            @Override
+            public void onInitializeClient() {
+            loadConfig();
+            
+            toggleHudKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+            "Toggle Square HUD",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_K,
+            "Velocity & Hitbox Mod"
+            ));
+            
+            toggleHitboxKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+            "Toggle Hitbox Fill",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_H,
+            "Velocity & Hitbox Mod"
+            ));
+            
+            menuKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+            "Open Mod Settings",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_RIGHT_SHIFT,
+            "Velocity & Hitbox Mod"
+            ));
+            
+            ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            while (toggleHudKey.consumeClick()) {
+            config.hudEnabled = !config.hudEnabled;
+            saveConfig();
+            if (client.player != null) {
+            client.player.displayClientMessage(
+            Component.literal(config.hudEnabled ? "Square: ON" : "Square: OFF"),
+            true
+            );
+            }
+            }
+            while (toggleHitboxKey.consumeClick()) {
+            config.hitboxEnabled = !config.hitboxEnabled;
+            saveConfig();
+            if (client.player != null) {
+            client.player.displayClientMessage(
+            Component.literal(config.hitboxEnabled ? "Hitbox Fill: ON" : "Hitbox Fill: OFF"),
+            true
+            );
+            }
+            }
+            while (menuKey.consumeClick()) {
+            client.setScreen(new ModConfigScreen());
+            }
+            });
+            
+            HudElementRegistry.attachElementBefore(
+            VanillaHudElements.CHAT,
+            ResourceLocation.fromNamespaceAndPath("template-mod", "velocity_indicator"),
+            TemplateModClient::renderHud
+            );
+            
+            WorldRenderEvents.AFTER_ENTITIES.register(TemplateModClient::renderPlayerHitboxes);
+            }
+            
+            private static void renderHud(GuiGraphics guiGraphics, DeltaTracker deltaTracker) {
+            Minecraft client = Minecraft.getInstance();
+            if (!config.hudEnabled || client.screen instanceof ModConfigScreen) return;
+            
+            LocalPlayer player = client.player;
+            if (player == null) return;
+            
+            double velocityY = player.getDeltaMovement().y;
+            String hex;
+            
+            if (velocityY > 0.01) {
+            hex = config.upColor;
+            } else if (velocityY < -0.08) {
+            hex = config.fallColor;
+            } else {
+            hex = config.idleColor;
+            }
+            
+            int color = parseHexColor(hex, 255);
+            guiGraphics.fill(config.x, config.y, config.x + config.size, config.y + config.size, color);
+            }
+            private static void renderPlayerHitboxes(WorldRenderContext context) {
+            if (!config.hitboxEnabled) return;
+            Minecraft client = Minecraft.getInstance();
+            if (client.level == null || client.player == null) return;
+            
+            Vec3 cameraPos = context.camera().getPosition();
+            PoseStack poseStack = context.matrixStack();
+            if (poseStack == null) return;
+            
+            int rgb = parseRgb(config.hitboxColor);
+            float r = ((rgb >> 16) & 0xFF) / 255.0f;
+            float g = ((rgb >> 8) & 0xFF) / 255.0f;
+            float b = (rgb & 0xFF) / 255.0f;
+            float a = Math.max(0, Math.min(255, config.hitboxAlpha)) / 255.0f;
+            
+            float tickDelta = context.tickCounter().getGameTimeDeltaPartialTick(true);
+            
+            RenderSystem.enableBlend();
+            RenderSystem.defaultBlendFunc();
+            RenderSystem.enableDepthTest();
+            RenderSystem.depthMask(false);
+            RenderSystem.disableCull();
+            RenderSystem.setShader(CoreShaders.POSITION_COLOR);
+            
+            Tesselator tesselator = Tesselator.getInstance();
+            BufferBuilder buffer = tesselator.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+            boolean hasVertices = false;
+            
+            for (Player target : client.level.players()) {
+            if (target == client.player) continue;
+            
+            boolean hasArmor = !target.getItemBySlot(EquipmentSlot.HEAD).isEmpty()
+            || !target.getItemBySlot(EquipmentSlot.CHEST).isEmpty()
+            || !target.getItemBySlot(EquipmentSlot.LEGS).isEmpty()
+            || !target.getItemBySlot(EquipmentSlot.FEET).isEmpty();
+            
+            if (target.isInvisible() && !hasArmor) continue;
+            
+            double lerpX = target.xo + (target.getX() - target.xo) * tickDelta;
+            double lerpY = target.yo + (target.getY() - target.yo) * tickDelta;
+            double lerpZ = target.zo + (target.getZ() - target.zo) * tickDelta;
+            
+            AABB box = target.getBoundingBox()
+            .move(lerpX - target.getX(), lerpY - target.getY(), lerpZ - target.getZ())
+            .move(-cameraPos.x, -cameraPos.y, -cameraPos.z);
+            
+            addFilledBox(buffer, poseStack.last().pose(), box, r, g, b, a);
+            hasVertices = true;
+            }
+            
+            if (hasVertices) {
+            MeshData meshData = buffer.build();
+            if (meshData != null) {
+            BufferUploader.drawWithShader(meshData);
+            }
+            }
+            
+            RenderSystem.enableCull();
+            RenderSystem.depthMask(true);
+            RenderSystem.disableBlend();
+            }
+            
+            private static void addFilledBox(BufferBuilder buffer, Matrix4f mat, AABB box, float r, float g, float b, float a) {
+            float minX = (float) box.minX;
+            float minY = (float) box.minY;
+            float minZ = (float) box.minZ;
+            float maxX = (float) box.maxX;
+            float maxY = (float) box.maxY;
+            float maxZ = (float) box.maxZ;
+            
+            buffer.addVertex(mat, minX, minY, minZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, maxX, minY, minZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, maxX, minY, maxZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, minX, minY, maxZ).setColor(r, g, b, a);
+            
+            buffer.addVertex(mat, minX, maxY, minZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, minX, maxY, maxZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, maxX, maxY, maxZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, maxX, maxY, minZ).setColor(r, g, b, a);
+            
+            buffer.addVertex(mat, minX, minY, minZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, minX, maxY, minZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, maxX, maxY, minZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, maxX, minY, minZ).setColor(r, g, b, a);
+            
+            buffer.addVertex(mat, minX, minY, maxZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, maxX, minY, maxZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, maxX, maxY, maxZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, minX, maxY, maxZ).setColor(r, g, b, a);
+            
+            buffer.addVertex(mat, minX, minY, minZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, minX, minY, maxZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, minX, maxY, maxZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, minX, maxY, minZ).setColor(r, g, b, a);
+            
+            buffer.addVertex(mat, maxX, minY, minZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, maxX, maxY, minZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, maxX, maxY, maxZ).setColor(r, g, b, a);
+            buffer.addVertex(mat, maxX, minY, maxZ).setColor(r, g, b, a);
+            }
+            public static int parseRgb(String hex) {
+            try {
+            String clean = hex.replace("#", "").trim();
+            if (clean.length() == 6) {
+            return Integer.parseInt(clean, 16);
+            }
+            } catch (Exception ignored) {}
+            return 0xFFFFFF;
+            }
+            
+            public static int parseHexColor(String hex, int alpha) {
+            return ((alpha & 0xFF) << 24) | parseRgb(hex);
+            }
+            
+            public static void saveConfig() {
+            try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
+            new GsonBuilder().setPrettyPrinting().create().toJson(config, writer);
+            } catch (Exception ignored) {}
+            }
+            
+            public static void loadConfig() {
+            if (CONFIG_FILE.exists()) {
+            try (FileReader reader = new FileReader(CONFIG_FILE)) {
+            ModConfig loaded = new Gson().fromJson(reader, ModConfig.class);
+            if (loaded != null) config = loaded;
+            } catch (Exception ignored) {}
+            }
+            }
+            
+            public static class ModConfigScreen extends Screen {
+            private boolean dragging = false;
+            private int dragOffsetX = 0;
+            private int dragOffsetY = 0;
+            private EditBox upBox;
+            private EditBox fallBox;
+            private EditBox idleBox;
+            private EditBox sizeBox;
+            private EditBox hitboxColorBox;
+            private EditBox hitboxAlphaBox;
+            
+            public ModConfigScreen() {
+            super(Component.literal("Velocity & Hitbox Settings"));
+            }
+            
+            @Override
+            protected void init() {
+            int centerX = this.width / 2;
+            int startY = this.height / 2 - 70;
+            
+            upBox = new EditBox(this.font, centerX - 30, startY, 90, 18, Component.literal("Up Color"));
+            upBox.setValue(config.upColor);
+            this.addRenderableWidget(upBox);
+            
+            fallBox = new EditBox(this.font, centerX - 30, startY + 24, 90, 18, Component.literal("Fall Color"));
+            fallBox.setValue(config.fallColor);
+            this.addRenderableWidget(fallBox);
+            
+            idleBox = new EditBox(this.font, centerX - 30, startY + 48, 90, 18, Component.literal("Idle Color"));
+            idleBox.setValue(config.idleColor);
+            this.addRenderableWidget(idleBox);
+            
+            sizeBox = new EditBox(this.font, centerX - 30, startY + 72, 90, 18, Component.literal("Square Size"));
+            sizeBox.setValue(String.valueOf(config.size));
+            this.addRenderableWidget(sizeBox);
+            
+            hitboxColorBox = new EditBox(this.font, centerX - 30, startY + 96, 90, 18, Component.literal("Hitbox Color"));
+            hitboxColorBox.setValue(config.hitboxColor);
+            this.addRenderableWidget(hitboxColorBox);
+            
+            hitboxAlphaBox = new EditBox(this.font, centerX - 30, startY + 120, 90, 18, Component.literal("Hitbox Alpha"));
+            hitboxAlphaBox.setValue(String.valueOf(config.hitboxAlpha));
+            this.addRenderableWidget(hitboxAlphaBox);
+            
+            this.addRenderableWidget(Button.builder(Component.literal("Save & Close"), btn -> {
+            config.upColor = upBox.getValue();
+            config.fallColor = fallBox.getValue();
+            config.idleColor = idleBox.getValue();
+            config.hitboxColor = hitboxColorBox.getValue();
+            try {
+            config.size = Math.max(2, Math.min(100, Integer.parseInt(sizeBox.getValue().trim())));
+            } catch (Exception ignored) {}
+            try {
+            config.hitboxAlpha = Math.max(10, Math.min(255, Integer.parseInt(hitboxAlphaBox.getValue().trim())));
+            } catch (Exception ignored) {}
+            saveConfig();
+            this.onClose();
+            }).bounds(centerX - 45, startY + 148, 100, 20).build());
+            }
+            
+            @Override
+            public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
+            this.renderBackground(guiGraphics, mouseX, mouseY, partialTick);
+            super.render(guiGraphics, mouseX, mouseY, partialTick);
+            
+            int centerX = this.width / 2;
+            int startY = this.height / 2 - 70;
+            
+            guiGraphics.drawCenteredString(this.font, "Drag square with mouse! (HEX colors)", centerX, startY - 22, 0xFFFFFF);
+            guiGraphics.drawString(this.font, "Up (Jump):", centerX - 115, startY + 5, 0xFF5555);
+            guiGraphics.drawString(this.font, "Fall:", centerX - 115, startY + 29, 0xFF69B4);
+            guiGraphics.drawString(this.font, "Idle:", centerX - 115, startY + 53, 0xFFFF00);
+            guiGraphics.drawString(this.font, "Size (px):", centerX - 115, startY + 77, 0xAAAAAA);
+            guiGraphics.drawString(this.font, "Hitbox HEX:", centerX - 115, startY + 101, 0x00FFFF);
+            guiGraphics.drawString(this.font, "Alpha (10-255):", centerX - 115, startY + 125, 0xAAAAAA);
+            
+            int previewColor = parseHexColor(idleBox.getValue(), 255);
+            guiGraphics.fill(config.x, config.y, config.x + config.size, config.y + config.size, previewColor);
+            guiGraphics.renderOutline(config.x - 1, config.y - 1, config.size + 2, config.size + 2, 0xFFFFFFFF);
+            }
+            
+            @Override
+            public boolean mouseClicked(double mouseX, double mouseY, int button) {
+            if (button == 0 && mouseX >= config.x && mouseX <= config.x + config.size && mouseY >= config.y && mouseY <= config.y + config.size) {
+            dragging = true;
+            dragOffsetX = (int) mouseX - config.x;
+            dragOffsetY = (int) mouseY - config.y;
+            return true;
+            }
+            return super.mouseClicked(mouseX, mouseY, button);
+            }
+            
+            @Override
+            public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+            if (dragging) {
+            config.x = (int) mouseX - dragOffsetX;
+            config.y = (int) mouseY - dragOffsetY;
+            return true;
+            }
+            return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+            }
+            
+            @Override
+            public boolean mouseReleased(double mouseX, double mouseY, int button) {
+            dragging = false;
+            return super.mouseReleased(mouseX, mouseY, button);
+            }
+            }
+            }
 EOF
       - uses: actions/setup-java@v4
         with:
