@@ -563,7 +563,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: gotoviy-mod
-          path: build/libs/template-mod-1.0.0.jar
-                  HudRenderCallback.EVENT.register((guiGraphics, tickCounter) -> renderHud(guiGraphics));
-                  WorldRenderEvents.AFTER_TRANSLUCENT.register(TemplateModClient::renderPlayerHitboxes);
-              }
+          path: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
+
