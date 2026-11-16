@@ -11,6 +11,7 @@ jobs:
       - name: Build Mod Sources
         run: |
           sed -i 's/"fabricloader": "[^"]*"/"fabricloader": ">=0.16.0"/g' src/main/resources/fabric.mod.json
+          sed -i 's/"ExampleClientMixin"//g' src/client/resources/template-mod.client.mixins.json
           rm -rf src/client/java/com/example/client/*
           mkdir -p src/client/java/com/example/client
           cat << 'EOF' > src/client/java/com/example/client/ModConfig.java
