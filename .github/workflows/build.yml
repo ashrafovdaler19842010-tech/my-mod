@@ -6,6 +6,54 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o mod.zip || true
+      - name: Fix Client Code
+        run: |
+          cat << 'EOF' > src/client/java/com/example/client/TemplateModClient.java
+          package com.example.client;
+
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+          import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
+          import net.minecraft.client.DeltaTracker;
+          import net.minecraft.client.Minecraft;
+          import net.minecraft.client.gui.GuiGraphics;
+          import net.minecraft.client.player.LocalPlayer;
+          import net.minecraft.resources.ResourceLocation;
+
+          public class TemplateModClient implements ClientModInitializer {
+              @Override
+              public void onInitializeClient() {
+                  HudElementRegistry.attachElementBefore(
+                          VanillaHudElements.CHAT,
+                          ResourceLocation.fromNamespaceAndPath("template-mod", "velocity_indicator"),
+                          TemplateModClient::renderSquare
+                  );
+              }
+
+              private static void renderSquare(GuiGraphics guiGraphics, DeltaTracker deltaTracker) {
+                  Minecraft client = Minecraft.getInstance();
+                  LocalPlayer player = client.player;
+
+                  if (player == null) return;
+
+                  double velocityY = player.getDeltaMovement().y;
+                  int color;
+
+                  if (velocityY > 0.01) {
+                      color = 0xFFFF0000;
+                  } else if (velocityY < -0.08) {
+                      color = 0xFFFF69B4;
+                  } else {
+                      color = 0xFFFFFFFF;
+                  }
+
+                  int x = 5;
+                  int y = 5;
+                  int size = 10;
+                  guiGraphics.fill(x, y, x + size, y + size, color);
+              }
+          }
+          EOF
       - uses: actions/setup-java@v4
         with:
           java-version: '25'
