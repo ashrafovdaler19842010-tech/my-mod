@@ -203,6 +203,10 @@ jobs:
                           }
                       }
                   });
+                  HudRenderCallback.EVENT.register((guiGraphics, tickCounter) -> renderHud(guiGraphics));
+                  WorldRenderEvents.AFTER_TRANSLUCENT.register(TemplateModClient::renderPlayerHitboxes);
+              }
+
               private void applyResetAction(Minecraft client, ModConfig.ResetMode mode, boolean active) {
                   switch (mode) {
                       case W_TAP -> {
