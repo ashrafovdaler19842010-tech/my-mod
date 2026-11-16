@@ -289,10 +289,6 @@ jobs:
                   float a = Math.max(10, Math.min(255, cfg.hitboxAlpha)) / 255.0f;
                   float tickDelta = context.tickCounter().getGameTimeDeltaPartialTick(true);
 
-                  RenderSystem.enableBlend();
-                  RenderSystem.defaultBlendFunc();
-                  RenderSystem.disableCull();
-
                   for (Player target : client.level.players()) {
                       if (target == client.player) continue;
                       boolean hasArmor = !target.getItemBySlot(EquipmentSlot.HEAD).isEmpty()
@@ -318,8 +314,7 @@ jobs:
                       }
                   }
 
-                  RenderSystem.enableCull();
-                  RenderSystem.disableBlend();
+              
               }
 
               private static void addTriangleStripBox(VertexConsumer buf, Matrix4f mat, AABB box, float r, float g, float b, float a) {
