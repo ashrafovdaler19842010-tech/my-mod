@@ -21,7 +21,8 @@ jobs:
           import com.google.gson.Gson;
           import com.google.gson.GsonBuilder;
           import net.fabricmc.loader.api.FabricLoader;
-          import net.minecraft.item.ItemStack;
+          import net.minecraft.world.item.ItemStack;
+
           import java.io.File;
           import java.io.FileReader;
           import java.io.FileWriter;
@@ -45,7 +46,7 @@ jobs:
               public int saveLayoutKey = 79; // O
               public int sortInventoryKey = 80; // P
               public int copyChestKey = 67; // C
-              public long sortSpeedMs = 100; // Скорость сортировки (задержка между кликами)
+              public long sortSpeedMs = 100; // Скорость сортировки
 
               public transient Map<Integer, ItemStack> savedLayout = new HashMap<>();
 
@@ -82,23 +83,21 @@ jobs:
           cat << 'EOF' > src/client/java/com/example/client/CombatUtilsClient.java
           package com.example.client;
 
+          import com.mojang.blaze3d.platform.InputConstants;
           import net.fabricmc.api.ClientModInitializer;
           import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
           import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
           import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
-          import net.minecraft.client.MinecraftClient;
-          import net.minecraft.client.gui.DrawContext;
-          import net.minecraft.client.gui.screen.ingame.InventoryScreen;
-          import net.minecraft.client.network.ClientPlayerEntity;
-          import net.minecraft.client.util.InputUtil;
-          import net.minecraft.entity.Entity;
-          import net.minecraft.entity.projectile.ProjectileUtil;
-          import net.minecraft.item.ItemStack;
-          import net.minecraft.screen.slot.SlotActionType;
-          import net.minecraft.util.ActionResult;
-          import net.minecraft.util.Hand;
-          import net.minecraft.util.hit.EntityHitResult;
-          import net.minecraft.util.hit.HitResult;
+          import net.minecraft.client.Minecraft;
+          import net.minecraft.client.gui.GuiGraphics;
+          import net.minecraft.client.gui.screens.inventory.InventoryScreen;
+          import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+          import net.minecraft.client.player.LocalPlayer;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.world.InteractionResult;
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.item.ItemStack;
+          import net.minecraft.world.inventory.ClickType;
           import org.lwjgl.glfw.GLFW;
 
           public class CombatUtilsClient implements ClientModInitializer {
@@ -107,9 +106,8 @@ jobs:
               private static boolean resetting = false;
               private static long resetStart = 0, resetEnd = 0;
 
-              // Переменные для легальной сортировки
               private static boolean isSorting = false;
-              private static int sortStep = 0; // 0 = поиск, 1 = взять, 2 = положить, 3 = вернуть остаток
+              private static int sortStep = 0;
               private static int sortSourceSlot = -1;
               private static int sortTargetSlot = -1;
               private static long nextSortActionTime = 0;
@@ -120,9 +118,9 @@ jobs:
 
                   AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
                       ModConfig cfg = ModConfig.INSTANCE;
-                      if (!cfg.sprintEnabled || !world.isClient || player != MinecraftClient.getInstance().player) return ActionResult.PASS;
+                      if (!cfg.sprintEnabled || !world.isClientSide || player != Minecraft.getInstance().player) return InteractionResult.PASS;
 
-                      boolean critState = player.fallDistance > 0.0F && !player.isOnGround() && !player.isClimbing() && !player.isTouchingWater();
+                      boolean critState = player.fallDistance > 0.0F && !player.onGround() && !player.onClimbable() && !player.isInWater();
                       if (!cfg.critOnly || critState) {
                           if (player.isSprinting() || cfg.autoSprint) {
                               resetStart = System.currentTimeMillis() + cfg.startDelayMs;
@@ -130,70 +128,62 @@ jobs:
                               resetting = true;
                           }
                       }
-                      return ActionResult.PASS;
+                      return InteractionResult.PASS;
                   });
 
                   ClientTickEvents.END_CLIENT_TICK.register(client -> {
                       if (client.player == null || client.getWindow() == null) return;
-                      long win = client.getWindow().getHandle();
+                      long win = client.getWindow().getWindow();
                       ModConfig cfg = ModConfig.INSTANCE;
 
-                      // Меню на Right Ctrl
-                      boolean rCtrl = InputUtil.isKeyPressed(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
+                      boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
-                          if (client.currentScreen instanceof ModConfigScreen) client.setScreen(null);
-                          else if (client.currentScreen == null) client.setScreen(new ModConfigScreen());
+                          if (client.screen instanceof ModConfigScreen) client.setScreen(null);
+                          else if (client.screen == null) client.setScreen(new ModConfigScreen());
                       }
                       rCtrlWasDown = rCtrl;
 
-                      // Логика сброса спринта
                       long now = System.currentTimeMillis();
                       boolean activeReset = false;
                       if (cfg.sprintEnabled && resetting) {
                           if (now >= resetStart && now <= resetEnd) {
                               activeReset = true;
-                              if (cfg.sprintMode.equals("W_TAP")) client.options.forwardKey.setPressed(false);
-                              else if (cfg.sprintMode.equals("S_TAP")) { client.options.forwardKey.setPressed(false); client.options.backKey.setPressed(true); }
-                              else if (cfg.sprintMode.equals("SPRINT")) client.options.sprintKey.setPressed(false);
+                              if (cfg.sprintMode.equals("W_TAP")) client.options.keyUp.setDown(false);
+                              else if (cfg.sprintMode.equals("S_TAP")) { client.options.keyUp.setDown(false); client.options.keyDown.setDown(true); }
+                              else if (cfg.sprintMode.equals("SPRINT")) client.options.keySprint.setDown(false);
                           } else if (now > resetEnd) {
                               restoreKeys(client);
                               resetting = false;
                           }
                       }
 
-                      // AutoSprint: если зажат W и мы не в сбросе — жмем Ctrl
-                      if (cfg.autoSprint && client.currentScreen == null && !activeReset) {
-                          if (client.options.forwardKey.isPressed() && !client.player.isSneaking()) {
-                              client.options.sprintKey.setPressed(true);
+                      if (cfg.autoSprint && client.screen == null && !activeReset) {
+                          if (client.options.keyUp.isDown() && !client.player.isShiftKeyDown()) {
+                              client.options.keySprint.setDown(true);
                           } else {
-                              // Отпускаем Ctrl, если W отпущен
                               restoreKeys(client);
                           }
                       }
 
-                      // Сохранение раскладки (по бинду O)
-                      if (InputUtil.isKeyPressed(win, cfg.saveLayoutKey) && client.currentScreen == null) {
+                      if (InputConstants.isKeyDown(win, cfg.saveLayoutKey) && client.screen == null) {
                           cfg.savedLayout.clear();
                           for (int i = 0; i < 36; i++) {
-                              ItemStack stack = client.player.getInventory().getStack(i);
+                              ItemStack stack = client.player.getInventory().getItem(i);
                               if (!stack.isEmpty()) cfg.savedLayout.put(i, stack.copy());
                           }
-                          client.player.sendMessage(net.minecraft.text.Text.literal("§aРаскладка сохранена!"), true);
+                          client.player.displayClientMessage(Component.literal("§aРаскладка сохранена!"), true);
                           ModConfig.save();
                       }
 
-                      // Запуск сортировки (по бинду P в инвентаре)
-                      if (InputUtil.isKeyPressed(win, cfg.sortInventoryKey) && client.currentScreen instanceof InventoryScreen && !isSorting) {
+                      if (InputConstants.isKeyDown(win, cfg.sortInventoryKey) && client.screen instanceof InventoryScreen && !isSorting) {
                           startSorting();
                       }
 
-                      // Процесс легальной сортировки
                       if (isSorting) {
                           tickSort(client, cfg);
                       }
 
-                      // Копирование сундука (по бинду C)
-                      if (InputUtil.isKeyPressed(win, cfg.copyChestKey) && client.currentScreen instanceof net.minecraft.client.gui.screen.ingame.HandledScreen<?> hs) {
+                      if (InputConstants.isKeyDown(win, cfg.copyChestKey) && client.screen instanceof AbstractContainerScreen<?> hs) {
                           copyChestInfo(client, hs);
                       }
                   });
@@ -201,26 +191,26 @@ jobs:
                   HudRenderCallback.EVENT.register((context, tickCounter) -> renderHud(context));
               }
 
-              private static void restoreKeys(MinecraftClient client) {
-                  client.options.forwardKey.setPressed(InputUtil.isKeyPressed(client.getWindow().getHandle(), client.options.forwardKey.getBoundKey().getCode()));
-                  client.options.backKey.setPressed(InputUtil.isKeyPressed(client.getWindow().getHandle(), client.options.backKey.getBoundKey().getCode()));
-                  client.options.sprintKey.setPressed(InputUtil.isKeyPressed(client.getWindow().getHandle(), client.options.sprintKey.getBoundKey().getCode()));
+              private static void restoreKeys(Minecraft client) {
+                  client.options.keyUp.setDown(InputConstants.isKeyDown(client.getWindow().getWindow(), client.options.keyUp.getKey().getValue()));
+                  client.options.keyDown.setDown(InputConstants.isKeyDown(client.getWindow().getWindow(), client.options.keyDown.getKey().getValue()));
+                  client.options.keySprint.setDown(InputConstants.isKeyDown(client.getWindow().getWindow(), client.options.keySprint.getKey().getValue()));
               }
 
-              private static void renderHud(DrawContext context) {
-                  MinecraftClient mc = MinecraftClient.getInstance();
-                  ClientPlayerEntity player = mc.player;
-                  if (player == null || mc.options.hudHidden) return;
+              private static void renderHud(GuiGraphics context) {
+                  Minecraft mc = Minecraft.getInstance();
+                  LocalPlayer player = mc.player;
+                  if (player == null || mc.options.hideGui) return;
                   ModConfig cfg = ModConfig.INSTANCE;
                   if (!cfg.critEnabled) return;
 
-                  boolean falling = player.fallDistance > 0.0F && !player.isOnGround() && !player.isClimbing() && !player.isTouchingWater();
-                  boolean inWater = player.isTouchingWater();
+                  boolean falling = player.fallDistance > 0.0F && !player.onGround() && !player.onClimbable() && !player.isInWater();
+                  boolean inWater = player.isInWater();
                   double dist = 100.0;
 
-                  HitResult hit = mc.crosshairTarget;
-                  if (hit != null && hit.getType() == HitResult.Type.ENTITY) {
-                      dist = player.distanceTo(((EntityHitResult) hit).getEntity());
+                  Entity target = mc.crosshairPickEntity;
+                  if (target != null) {
+                      dist = player.distanceTo(target);
                   }
 
                   int color = ModConfig.parseHexColor(cfg.whiteColor);
@@ -230,41 +220,38 @@ jobs:
                   }
 
                   context.fill(cfg.critX, cfg.critY, cfg.critX + cfg.critSize, cfg.critY + cfg.critSize, color);
-                  context.drawBorder(cfg.critX - 1, cfg.critY - 1, cfg.critSize + 2, cfg.critSize + 2, 0xFF000000);
+                  context.renderOutline(cfg.critX - 1, cfg.critY - 1, cfg.critSize + 2, cfg.critSize + 2, 0xFF000000);
               }
 
-              // --- ЛОГИКА ЛЕГАЛЬНОЙ СОРТИРОВКИ ---
               private static void startSorting() {
                   isSorting = true;
                   sortStep = 0;
                   nextSortActionTime = System.currentTimeMillis();
               }
 
-              private static void tickSort(MinecraftClient mc, ModConfig cfg) {
-                  if (!(mc.currentScreen instanceof InventoryScreen) || mc.player == null || mc.interactionManager == null) {
-                      isSorting = false; // Отменяем, если закрыли инвентарь
+              private static void tickSort(Minecraft mc, ModConfig cfg) {
+                  if (!(mc.screen instanceof InventoryScreen) || mc.player == null || mc.gameMode == null) {
+                      isSorting = false;
                       return;
                   }
 
-                  if (System.currentTimeMillis() < nextSortActionTime) return; // Ждем задержку (скорость)
+                  if (System.currentTimeMillis() < nextSortActionTime) return;
 
-                  int syncId = mc.player.playerScreenHandler.syncId;
+                  int syncId = mc.player.inventoryMenu.containerId;
 
                   if (sortStep == 0) {
-                      // Ищем несоответствие
                       boolean found = false;
                       for (int targetSlot = 0; targetSlot < 36; targetSlot++) {
                           ItemStack saved = cfg.savedLayout.get(targetSlot);
                           if (saved == null) continue;
 
-                          ItemStack current = mc.player.getInventory().getStack(targetSlot);
-                          if (ItemStack.areItemsAndComponentsEqual(current, saved)) continue;
+                          ItemStack current = mc.player.getInventory().getItem(targetSlot);
+                          if (ItemStack.isSameItemSameComponents(current, saved)) continue;
 
-                          // Ищем нужный предмет в остальных слотах
                           for (int sourceSlot = 0; sourceSlot < 36; sourceSlot++) {
                               if (sourceSlot == targetSlot) continue;
-                              ItemStack check = mc.player.getInventory().getStack(sourceSlot);
-                              if (ItemStack.areItemsAndComponentsEqual(check, saved)) {
+                              ItemStack check = mc.player.getInventory().getItem(sourceSlot);
+                              if (ItemStack.isSameItemSameComponents(check, saved)) {
                                   sortSourceSlot = sourceSlot;
                                   sortTargetSlot = targetSlot;
                                   found = true;
@@ -275,58 +262,60 @@ jobs:
                       }
 
                       if (!found) {
-                          isSorting = false; // Всё отсортировано
+                          isSorting = false;
                           return;
                       }
 
-                      // Шаг 1: Берем предмет из исходного слота
-                      mc.interactionManager.clickSlot(syncId, sortSourceSlot, 0, SlotActionType.PICKUP, mc.player);
+                      mc.gameMode.handleInventoryMouseClick(syncId, getMenuSlot(sortSourceSlot), 0, ClickType.PICKUP, mc.player);
                       sortStep = 1;
                       nextSortActionTime = System.currentTimeMillis() + cfg.sortSpeedMs;
                   }
                   else if (sortStep == 1) {
-                      // Шаг 2: Кладем в целевой слот
-                      mc.interactionManager.clickSlot(syncId, sortTargetSlot, 0, SlotActionType.PICKUP, mc.player);
+                      mc.gameMode.handleInventoryMouseClick(syncId, getMenuSlot(sortTargetSlot), 0, ClickType.PICKUP, mc.player);
                       sortStep = 2;
                       nextSortActionTime = System.currentTimeMillis() + cfg.sortSpeedMs;
                   }
                   else if (sortStep == 2) {
-                      // Шаг 3: Возвращаем остаток (если целевой слот был занят) обратно в исходный
-                      mc.interactionManager.clickSlot(syncId, sortSourceSlot, 0, SlotActionType.PICKUP, mc.player);
+                      mc.gameMode.handleInventoryMouseClick(syncId, getMenuSlot(sortSourceSlot), 0, ClickType.PICKUP, mc.player);
                       sortStep = 0;
                       nextSortActionTime = System.currentTimeMillis() + cfg.sortSpeedMs;
                   }
               }
 
-              private static void copyChestInfo(MinecraftClient mc, net.minecraft.client.gui.screen.ingame.HandledScreen<?> screen) {
+              private static int getMenuSlot(int invSlot) {
+                  if (invSlot < 9) return 36 + invSlot;
+                  return invSlot;
+              }
+
+              private static void copyChestInfo(Minecraft mc, AbstractContainerScreen<?> screen) {
                   StringBuilder sb = new StringBuilder("=== Содержимое контейнера ===\n");
-                  int chestSize = screen.getScreenHandler().getStacks().size();
+                  int chestSize = screen.getMenu().slots.size();
                   
                   for (int i = 0; i < chestSize; i++) {
-                      ItemStack stack = screen.getScreenHandler().getSlot(i).getStack();
+                      ItemStack stack = screen.getMenu().getSlot(i).getItem();
                       if (stack.isEmpty()) continue;
 
                       sb.append("Слот ").append(i).append(": ")
-                        .append(stack.getName().getString())
+                        .append(stack.getHoverName().getString())
                         .append(" x").append(stack.getCount());
 
-                      if (stack.isDamageable() && stack.isDamaged()) {
-                          sb.append(" | Прочность: ").append(stack.getMaxDamage() - stack.getDamage()).append("/").append(stack.getMaxDamage());
+                      if (stack.isDamageableItem() && stack.isDamaged()) {
+                          sb.append(" | Прочность: ").append(stack.getMaxDamage() - stack.getDamageValue()).append("/").append(stack.getMaxDamage());
                       }
 
-                      if (stack.hasEnchantments()) {
+                      if (stack.isEnchanted()) {
                           sb.append(" | Зачарования: ");
-                          stack.getEnchantments().forEach(e -> sb.append(e.getIdAsString()).append(" "));
+                          stack.getAllEnchantments().forEach((ench, lvl) -> sb.append(ench.value().description().getString()).append(" ").append(lvl).append(", "));
                       }
 
-                      if (stack.hasNbt()) {
-                          sb.append(" | NBT: ").append(stack.getNbt().toString());
+                      if (stack.hasTag()) {
+                          sb.append(" | NBT: ").append(stack.getTag().toString());
                       }
                       sb.append("\n");
                   }
 
-                  mc.keyboard.setClipboard(sb.toString());
-                  if (mc.player != null) mc.player.sendMessage(net.minecraft.text.Text.literal("§aИнфа о сундуке скопирована!"), true);
+                  mc.keyboardHandler.setClipboard(sb.toString());
+                  if (mc.player != null) mc.player.displayClientMessage(Component.literal("§aИнфа о сундуке скопирована!"), true);
               }
           }
           EOF
@@ -334,81 +323,81 @@ jobs:
           cat << 'EOF' > src/client/java/com/example/client/ModConfigScreen.java
           package com.example.client;
 
-          import net.minecraft.client.gui.DrawContext;
-          import net.minecraft.client.gui.screen.Screen;
-          import net.minecraft.client.gui.widget.ButtonWidget;
-          import net.minecraft.client.gui.widget.SliderWidget;
-          import net.minecraft.client.gui.widget.TextFieldWidget;
-          import net.minecraft.text.Text;
+          import net.minecraft.client.gui.GuiGraphics;
+          import net.minecraft.client.gui.components.AbstractSliderButton;
+          import net.minecraft.client.gui.components.Button;
+          import net.minecraft.client.gui.components.EditBox;
+          import net.minecraft.client.gui.screens.Screen;
+          import net.minecraft.network.chat.Component;
 
           public class ModConfigScreen extends Screen {
               private int tab = 0;
               private boolean dragging = false;
               private int dragX, dragY;
 
-              public ModConfigScreen() { super(Text.literal("Combat Utils")); }
+              public ModConfigScreen() { super(Component.literal("Combat Utils")); }
 
               @Override
               protected void init() {
-                  this.clearChildren();
+                  this.clearWidgets();
                   ModConfig cfg = ModConfig.INSTANCE;
                   int x = this.width / 2 - 120, y = this.height / 2 - 100;
 
-                  this.addDrawableChild(ButtonWidget.builder(Text.literal(tab == 0 ? "§b[ Sprint ]" : "Sprint"), b -> { tab = 0; init(); }).dimensions(x + 10, y + 25, 70, 20).build());
-                  this.addDrawableChild(ButtonWidget.builder(Text.literal(tab == 1 ? "§b[ Crit ]" : "Crit"), b -> { tab = 1; init(); }).dimensions(x + 85, y + 25, 70, 20).build());
-                  this.addDrawableChild(ButtonWidget.builder(Text.literal(tab == 2 ? "§b[ Utils ]" : "Utils"), b -> { tab = 2; init(); }).dimensions(x + 160, y + 25, 70, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 0 ? "§b[ Sprint ]" : "Sprint"), b -> { tab = 0; init(); }).bounds(x + 10, y + 25, 70, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 1 ? "§b[ Crit ]" : "Crit"), b -> { tab = 1; init(); }).bounds(x + 85, y + 25, 70, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 2 ? "§b[ Utils ]" : "Utils"), b -> { tab = 2; init(); }).bounds(x + 160, y + 25, 70, 20).build());
 
                   if (tab == 0) {
-                      this.addDrawableChild(ButtonWidget.builder(Text.literal("Sprint: " + (cfg.sprintEnabled ? "§aON" : "§cOFF")), b -> { cfg.sprintEnabled = !cfg.sprintEnabled; ModConfig.save(); init(); }).dimensions(x + 10, y + 55, 220, 20).build());
-                      this.addDrawableChild(ButtonWidget.builder(Text.literal("AutoSprint: " + (cfg.autoSprint ? "§aON" : "§cOFF")), b -> { cfg.autoSprint = !cfg.autoSprint; ModConfig.save(); init(); }).dimensions(x + 10, y + 80, 220, 20).build());
-                      this.addDrawableChild(ButtonWidget.builder(Text.literal("Crit Only: " + (cfg.critOnly ? "§aON" : "§cOFF")), b -> { cfg.critOnly = !cfg.critOnly; ModConfig.save(); init(); }).dimensions(x + 10, y + 105, 220, 20).build());
-                      this.addDrawableChild(ButtonWidget.builder(Text.literal("Mode: §e" + cfg.sprintMode), b -> { 
+                      this.addRenderableWidget(Button.builder(Component.literal("Sprint: " + (cfg.sprintEnabled ? "§aON" : "§cOFF")), b -> { cfg.sprintEnabled = !cfg.sprintEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 220, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("AutoSprint: " + (cfg.autoSprint ? "§aON" : "§cOFF")), b -> { cfg.autoSprint = !cfg.autoSprint; ModConfig.save(); init(); }).bounds(x + 10, y + 80, 220, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Crit Only: " + (cfg.critOnly ? "§aON" : "§cOFF")), b -> { cfg.critOnly = !cfg.critOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 220, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Mode: §e" + cfg.sprintMode), b -> { 
                           if (cfg.sprintMode.equals("W_TAP")) cfg.sprintMode = "S_TAP";
                           else if (cfg.sprintMode.equals("S_TAP")) cfg.sprintMode = "SPRINT";
                           else cfg.sprintMode = "W_TAP";
                           ModConfig.save(); init();
-                      }).dimensions(x + 10, y + 130, 220, 20).build());
+                      }).bounds(x + 10, y + 130, 220, 20).build());
                   } else if (tab == 1) {
-                      this.addDrawableChild(ButtonWidget.builder(Text.literal("Crit Square: " + (cfg.critEnabled ? "§aON" : "§cOFF")), b -> { cfg.critEnabled = !cfg.critEnabled; ModConfig.save(); init(); }).dimensions(x + 10, y + 55, 220, 20).build());
-                      TextFieldWidget pinkBox = new TextFieldWidget(this.textRenderer, x + 100, y + 85, 130, 18, Text.literal("Pink"));
-                      pinkBox.setText(cfg.pinkColor);
-                      this.addDrawableChild(pinkBox);
-                      TextFieldWidget redBox = new TextFieldWidget(this.textRenderer, x + 100, y + 110, 130, 18, Text.literal("Red"));
-                      redBox.setText(cfg.redColor);
-                      this.addDrawableChild(redBox);
-                      TextFieldWidget sizeBox = new TextFieldWidget(this.textRenderer, x + 100, y + 135, 130, 18, Text.literal("Size"));
-                      sizeBox.setText(String.valueOf(cfg.critSize));
-                      this.addDrawableChild(sizeBox);
-                      this.addDrawableChild(ButtonWidget.builder(Text.literal("§aSave Colors"), b -> {
-                          cfg.pinkColor = pinkBox.getText();
-                          cfg.redColor = redBox.getText();
-                          try { cfg.critSize = Integer.parseInt(sizeBox.getText()); } catch (Exception ignored) {}
+                      this.addRenderableWidget(Button.builder(Component.literal("Crit Square: " + (cfg.critEnabled ? "§aON" : "§cOFF")), b -> { cfg.critEnabled = !cfg.critEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 220, 20).build());
+                      EditBox pinkBox = new EditBox(this.font, x + 100, y + 85, 130, 18, Component.literal("Pink"));
+                      pinkBox.setValue(cfg.pinkColor);
+                      this.addRenderableWidget(pinkBox);
+                      EditBox redBox = new EditBox(this.font, x + 100, y + 110, 130, 18, Component.literal("Red"));
+                      redBox.setValue(cfg.redColor);
+                      this.addRenderableWidget(redBox);
+                      EditBox sizeBox = new EditBox(this.font, x + 100, y + 135, 130, 18, Component.literal("Size"));
+                      sizeBox.setValue(String.valueOf(cfg.critSize));
+                      this.addRenderableWidget(sizeBox);
+                      this.addRenderableWidget(Button.builder(Component.literal("§aSave Colors"), b -> {
+                          cfg.pinkColor = pinkBox.getValue();
+                          cfg.redColor = redBox.getValue();
+                          try { cfg.critSize = Integer.parseInt(sizeBox.getValue()); } catch (Exception ignored) {}
                           ModConfig.save(); init();
-                      }).dimensions(x + 10, y + 160, 220, 20).build());
+                      }).bounds(x + 10, y + 160, 220, 20).build());
                   } else {
-                      this.addDrawableChild(ButtonWidget.builder(Text.literal("Save Bind: §e" + (char)cfg.saveLayoutKey), b -> {}).dimensions(x + 10, y + 55, 220, 20).build());
-                      this.addDrawableChild(ButtonWidget.builder(Text.literal("Sort Bind: §e" + (char)cfg.sortInventoryKey), b -> {}).dimensions(x + 10, y + 80, 220, 20).build());
-                      this.addDrawableChild(ButtonWidget.builder(Text.literal("Copy Chest Bind: §e" + (char)cfg.copyChestKey), b -> {}).dimensions(x + 10, y + 105, 220, 20).build());
-                      this.addDrawableChild(new SpeedSlider(x + 10, y + 130, 220, 20, cfg.sortSpeedMs, val -> { cfg.sortSpeedMs = val; ModConfig.save(); }));
+                      this.addRenderableWidget(Button.builder(Component.literal("Save Bind: §e" + (char)cfg.saveLayoutKey), b -> {}).bounds(x + 10, y + 55, 220, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Sort Bind: §e" + (char)cfg.sortInventoryKey), b -> {}).bounds(x + 10, y + 80, 220, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Copy Chest Bind: §e" + (char)cfg.copyChestKey), b -> {}).bounds(x + 10, y + 105, 220, 20).build());
+                      this.addRenderableWidget(new SpeedSlider(x + 10, y + 130, 220, 20, cfg.sortSpeedMs, val -> { cfg.sortSpeedMs = val; ModConfig.save(); }));
                   }
               }
 
               @Override
-              public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+              public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
                   this.renderBackground(context, mouseX, mouseY, delta);
                   ModConfig cfg = ModConfig.INSTANCE;
                   int x = this.width / 2 - 120, y = this.height / 2 - 100;
                   context.fill(x - 1, y - 1, x + 241, y + 201, 0xFF00E5FF);
                   context.fill(x, y, x + 240, y + 200, 0xE612151E);
-                  context.drawCenteredTextWithShadow(this.textRenderer, "§b§lCombat Utils", x + 120, y + 10, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§b§lCombat Utils", x + 120, y + 10, 0xFFFFFF);
                   if (tab == 1) {
-                      context.drawTextWithShadow(this.textRenderer, "Pink:", x + 10, y + 90, 0xFF69B4);
-                      context.drawTextWithShadow(this.textRenderer, "Red:", x + 10, y + 115, 0xFF0000);
-                      context.drawTextWithShadow(this.textRenderer, "Size:", x + 10, y + 140, 0xFFFFFF);
+                      context.drawString(this.font, "Pink:", x + 10, y + 90, 0xFF69B4, false);
+                      context.drawString(this.font, "Red:", x + 10, y + 115, 0xFF0000, false);
+                      context.drawString(this.font, "Size:", x + 10, y + 140, 0xFFFFFF, false);
                       context.fill(cfg.critX, cfg.critY, cfg.critX + cfg.critSize, cfg.critY + cfg.critSize, ModConfig.parseHexColor(cfg.whiteColor));
-                      context.drawBorder(cfg.critX - 1, cfg.critY - 1, cfg.critSize + 2, cfg.critSize + 2, 0xFFFFFFFF);
+                      context.renderOutline(cfg.critX - 1, cfg.critY - 1, cfg.critSize + 2, cfg.critSize + 2, 0xFFFFFFFF);
                   } else if (tab == 2) {
-                      context.drawTextWithShadow(this.textRenderer, "Sort Speed:", x + 10, y + 135, 0xFFFFFF);
+                      context.drawString(this.font, "Sort Speed:", x + 10, y + 135, 0xFFFFFF, false);
                   }
                   super.render(context, mouseX, mouseY, delta);
               }
@@ -442,19 +431,19 @@ jobs:
               }
 
               @Override
-              public boolean shouldPause() { return false; }
+              public boolean isPauseScreen() { return false; }
 
-              private static class SpeedSlider extends SliderWidget {
+              private static class SpeedSlider extends AbstractSliderButton {
                   private final java.util.function.LongConsumer onChange;
                   public SpeedSlider(int x, int y, int w, int h, long current, java.util.function.LongConsumer onChange) {
-                      super(x, y, w, h, Text.empty(), (double) (current - 30) / (300 - 30));
+                      super(x, y, w, h, Component.empty(), (double) (current - 30) / (300 - 30));
                       this.onChange = onChange;
                       updateMessage();
                   }
                   @Override
                   protected void updateMessage() {
                       long val = Math.round(30 + (300 - 30) * this.value);
-                      this.setMessage(Text.literal("Sort Speed: §e" + val + " мс"));
+                      this.setMessage(Component.literal("Sort Speed: §e" + val + " мс"));
                   }
                   @Override
                   protected void applyValue() {
