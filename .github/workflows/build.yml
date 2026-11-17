@@ -13,6 +13,14 @@ jobs:
           sed -i 's/"fabricloader": "[^"]*"/"fabricloader": ">=0.16.0"/g' src/main/resources/fabric.mod.json
           sed -i 's/com.example.client.TemplateModClient/com.example.client.CombatUtilsClient/g' src/main/resources/fabric.mod.json
           
+          mkdir -p src/main/resources
+          cat << 'EOF' > src/main/resources/template-mod.accesswidener
+          accessWidener v2 named
+          accessible field net/minecraft/world/entity/LivingEntity noJumpDelay I
+          EOF
+          
+          sed -i 's/"entrypoints": {/"accessWidener": "template-mod.accesswidener",\n  "entrypoints": {/g' src/main/resources/fabric.mod.json
+
           cat << 'EOF' > src/client/resources/template-mod.client.mixins.json
           {
             "required": true,
@@ -51,6 +59,12 @@ jobs:
               public long holdDurationMs = 55;
               public boolean noJumpDelay = true;
 
+              // 10 SPEED MODES
+              public boolean speedEnabled = false;
+              public int speedKey = 71; // G
+              public int speedMode = 1; // 1-10
+              public float speedValue = 1.5f;
+
               public boolean triggerbotEnabled = false;
               public int triggerbotKey = 67; // C
               public float triggerMaxDist = 3.0f;
@@ -60,7 +74,7 @@ jobs:
               public boolean aimAssistEnabled = false;
               public int aimKey = 86; // V
               public float aimFov = 90.0f;
-              public int aimMode = 1; // 0=Snap, 1=Smooth, 2=Polar, 3=EaseOut, 4=Sine
+              public int aimMode = 1; 
               public int aimSpeed = 40;
               public int aimSmoothness = 30;
               public boolean aimWallCheck = true;
@@ -68,16 +82,15 @@ jobs:
               public boolean hitboxAim = true;
               public boolean randomAimPoint = true;
 
+              // 10 KILLAURA MODES
               public boolean killauraEnabled = false;
               public int killauraKey = 82; // R
+              public int killauraMode = 1; // 1-10
               public boolean swordOnly = true;
-              public boolean killauraWallCheck = true;
-              public boolean killauraSilent = true;
-              public boolean killauraFreelook = true;
               public boolean killauraCritOnly = true;
-              public float killauraRange = 3.5f;
+              public float killauraRange = 6.0f; // До 6 блоков
               public int killauraDelay = 50;
-              public int killauraRotationMode = 0;
+              public int backtrackDelay = 3; // Задержка для Backtrack (тики)
 
               public static ModConfig INSTANCE = new ModConfig();
 
@@ -95,14 +108,6 @@ jobs:
                       } catch (Exception ignored) {}
                   }
               }
-
-              public static int parseHexColor(String hex) {
-                  try {
-                      String clean = hex.replace("#", "").trim();
-                      if (clean.length() == 6) return 0xFF000000 | Integer.parseInt(clean, 16);
-                  } catch (Exception ignored) {}
-                  return 0xFFFFFFFF;
-              }
           }
           EOF
 
@@ -115,8 +120,8 @@ jobs:
           import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
           import net.minecraft.client.Minecraft;
           import net.minecraft.client.player.LocalPlayer;
-          import net.minecraft.network.chat.Component;
           import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
+          import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
           import net.minecraft.tags.ItemTags;
           import net.minecraft.util.Mth;
           import net.minecraft.world.InteractionHand;
@@ -127,6 +132,7 @@ jobs:
           import net.minecraft.world.phys.AABB;
           import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
+          import java.util.*;
 
           public class CombatUtilsClient implements ClientModInitializer {
 
@@ -134,16 +140,14 @@ jobs:
               private static boolean resetting = false;
               private static long resetStart = 0, resetEnd = 0;
 
-              private static boolean triggerToggled = false;
+              private static boolean trigToggled = false, aimToggled = false, kaToggled = false, spdToggled = false;
               private static boolean canTrigger = true;
               private static long lastTriggerTime = 0;
 
-              private static boolean aimToggled = false;
-              private static boolean killauraToggled = false;
+              private static boolean tKey, aKey, kKey, sKey;
 
-              private static boolean trigKeyWasDown = false;
-              private static boolean aimKeyWasDown = false;
-              private static boolean kaKeyWasDown = false;
+              private static final Map<Entity, Deque<Vec3>> positionHistory = new HashMap<>();
+              private static int tickCounter = 0;
 
               @Override
               public void onInitializeClient() {
@@ -151,13 +155,12 @@ jobs:
 
                   AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
                       ModConfig cfg = ModConfig.INSTANCE;
-                      if (!cfg.sprintEnabled || !world.isClientSide || player != Minecraft.getInstance().player) return InteractionResult.PASS;
-
-                      boolean critState = player.fallDistance > 0.0F && !player.onGround() && !player.onClimbable() && !player.isInWater();
-                      if (player.isSprinting() || cfg.autoSprint) {
-                          resetStart = System.currentTimeMillis() + cfg.startDelayMs;
-                          resetEnd = resetStart + cfg.holdDurationMs;
-                          resetting = true;
+                      if (cfg.sprintEnabled && world.isClientSide && player == Minecraft.getInstance().player) {
+                          if (player.isSprinting() || cfg.autoSprint) {
+                              resetStart = System.currentTimeMillis() + cfg.startDelayMs;
+                              resetEnd = resetStart + cfg.holdDurationMs;
+                              resetting = true;
+                          }
                       }
                       return InteractionResult.PASS;
                   });
@@ -166,77 +169,97 @@ jobs:
                       if (client.player == null || client.getWindow() == null) return;
                       long win = client.getWindow().getWindow();
                       ModConfig cfg = ModConfig.INSTANCE;
+                      tickCounter++;
 
-                      boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
-                      if (rCtrl && !rCtrlWasDown) {
-                          if (client.screen instanceof ModConfigScreen) client.setScreen(null);
-                          else if (client.screen == null) client.setScreen(new ModConfigScreen());
-                      }
-                      rCtrlWasDown = rCtrl;
+                      if (InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL)) {
+                          if (!rCtrlWasDown) {
+                              if (client.screen instanceof ModConfigScreen) client.setScreen(null);
+                              else if (client.screen == null) client.setScreen(new ModConfigScreen());
+                          }
+                          rCtrlWasDown = true;
+                      } else rCtrlWasDown = false;
 
-                      if (cfg.noJumpDelay && client.options.keyJump.isDown()) {
-                          client.player.noJumpDelay = 10;
-                      }
+                      if (cfg.noJumpDelay && client.options.keyJump.isDown()) client.player.noJumpDelay = 0;
 
                       if (client.screen == null) {
-                          if (cfg.triggerbotEnabled) {
-                              boolean tDown = InputConstants.isKeyDown(win, cfg.triggerbotKey);
-                              if (tDown && !trigKeyWasDown) {
-                                  triggerToggled = !triggerToggled;
-                                  client.player.displayClientMessage(Component.literal("Triggerbot: " + (triggerToggled ? "§aON" : "§cOFF")), true);
+                          if (cfg.triggerbotEnabled) { boolean d = InputConstants.isKeyDown(win, cfg.triggerbotKey); if (d && !tKey) trigToggled = !trigToggled; tKey = d; }
+                          if (cfg.aimAssistEnabled) { boolean d = InputConstants.isKeyDown(win, cfg.aimKey); if (d && !aKey) aimToggled = !aimToggled; aKey = d; }
+                          if (cfg.killauraEnabled) { boolean d = InputConstants.isKeyDown(win, cfg.killauraKey); if (d && !kKey) kaToggled = !kaToggled; kKey = d; }
+                          if (cfg.speedEnabled) { boolean d = InputConstants.isKeyDown(win, cfg.speedKey); if (d && !sKey) spdToggled = !spdToggled; sKey = d; }
+                      } else { tKey = aKey = kKey = sKey = true; }
+
+                      // --- 10 SPEED MODES ---
+                      if (cfg.speedEnabled && spdToggled && client.screen == null) {
+                          if (cfg.speedMode >= 1 && cfg.speedMode <= 10) {
+                              switch (cfg.speedMode) {
+                                  case 1: client.timer.msPerTick = 50.0f / cfg.speedValue; break; // Timer
+                                  case 2: if (client.player.onGround() && client.options.keyUp.isDown()) client.player.jumpFromGround(); break; // LowHop
+                                  case 3: if (!client.player.onGround() && client.options.keyUp.isDown()) { Vec3 m = client.player.getDeltaMovement(); client.player.setDeltaMovement(m.x * cfg.speedValue, m.y, m.z * cfg.speedValue); } break; // Strafe
+                                  case 4: if (client.player.getDeltaMovement().y < 0) client.player.setDeltaMovement(client.player.getDeltaMovement().x, -cfg.speedValue, client.player.getDeltaMovement().z); break; // FastFall
+                                  case 5: if (!client.player.isFallFlying()) client.player.connection.send(new ServerboundPlayerCommandPacket(client.player, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING)); break; // Elytra Spoof
+                                  case 6: if (client.player.onGround() && client.options.keyUp.isDown()) { Vec3 m = client.player.getDeltaMovement(); client.player.setDeltaMovement(m.x * 1.2, m.y, m.z * 1.2); } break; // Ground
+                                  case 7: if (client.player.isUsingItem()) client.player.setDeltaMovement(client.player.getDeltaMovement().multiply(1.3, 1, 1.3)); break; // NoSlow
+                                  case 8: if (client.player.onGround() && client.options.keyUp.isDown()) client.player.jumpFromGround(); break; // Bunny
+                                  case 9: if (client.player.horizontalCollision) client.player.setDeltaMovement(client.player.getDeltaMovement().x, 0.5, client.player.getDeltaMovement().z); break; // Step
+                                  case 10: if (tickCounter % 2 == 0) client.player.connection.send(new ServerboundMovePlayerPacket.Pos(client.player.getX() + cfg.speedValue, client.player.getY(), client.player.getZ(), client.player.onGround(), false)); break; // PacketFlood
                               }
-                              trigKeyWasDown = tDown;
                           }
-                          if (cfg.aimAssistEnabled) {
-                              boolean aDown = InputConstants.isKeyDown(win, cfg.aimKey);
-                              if (aDown && !aimKeyWasDown) {
-                                  aimToggled = !aimToggled;
-                                  client.player.displayClientMessage(Component.literal("AimAssist: " + (aimToggled ? "§aON" : "§cOFF")), true);
-                              }
-                              aimKeyWasDown = aDown;
+                      } else if (client.timer.msPerTick != 50.0f) client.timer.msPerTick = 50.0f;
+
+                      // --- BACKTRACK TRACKER ---
+                      if (client.level != null) {
+                          for (Entity e : client.level.entitiesForRendering()) {
+                              if (e == client.player) continue;
+                              positionHistory.putIfAbsent(e, new ArrayDeque<>());
+                              Deque<Vec3> h = positionHistory.get(e);
+                              h.addLast(e.position());
+                              if (h.size() > cfg.backtrackDelay + 1) h.removeFirst();
                           }
-                          if (cfg.killauraEnabled) {
-                              boolean kDown = InputConstants.isKeyDown(win, cfg.killauraKey);
-                              if (kDown && !kaKeyWasDown) {
-                                  killauraToggled = !killauraToggled;
-                                  client.player.displayClientMessage(Component.literal("Killaura: " + (killauraToggled ? "§aON" : "§cOFF")), true);
-                              }
-                              kaKeyWasDown = kDown;
-                          }
-                      } else {
-                          trigKeyWasDown = true; aimKeyWasDown = true; kaKeyWasDown = true;
                       }
 
                       // --- AIM ASSIST ---
                       if (cfg.aimAssistEnabled && aimToggled && client.screen == null) {
                           Entity target = getBestTarget(client, cfg.aimFov, cfg.aimWallCheck);
                           if (target instanceof LivingEntity living) {
-                              Vec3 targetPos = getTargetPoint(living, cfg.hitboxAim, cfg.randomAimPoint);
-                              applyRotation(client, targetPos, cfg, cfg.aimMode, cfg.aimSpeed, cfg.aimSilent, cfg.aimSmoothness, false);
+                              Vec3 pos = cfg.randomAimPoint ? new Vec3(living.getBoundingBox().minX + Math.random() * living.getBoundingBox().getXsize(), living.getBoundingBox().minY + Math.random() * living.getBoundingBox().getYsize(), living.getBoundingBox().minZ + Math.random() * living.getBoundingBox().getZsize()) : living.getEyePosition();
+                              applyRotation(client, pos, cfg, cfg.aimMode, cfg.aimSpeed, cfg.aimSilent, cfg.aimSmoothness);
                           }
                       }
 
-                      // --- KILLAURA ---
-                      if (cfg.killauraEnabled && killauraToggled && client.screen == null) {
+                      // --- 10 KILLAURA MODES ---
+                      if (cfg.killauraEnabled && kaToggled && client.screen == null) {
                           if (System.currentTimeMillis() - lastTriggerTime >= cfg.killauraDelay) {
                               ItemStack held = client.player.getMainHandItem();
                               if (!cfg.swordOnly || held.is(ItemTags.SWORDS)) {
-                                  
-                                  boolean canHit = true;
-                                  if (cfg.killauraCritOnly) {
-                                      canHit = client.player.fallDistance > 0.0F && !client.player.onGround() && !client.player.isInWater();
-                                  }
-                                  
+                                  boolean canHit = !cfg.killauraCritOnly || (client.player.fallDistance > 0.0F && !client.player.onGround() && !client.player.isInWater());
                                   if (canHit) {
-                                      Entity target = getClosestEntity(client, cfg.killauraRange, cfg.killauraWallCheck);
+                                      Entity target = getClosestEntity(client, cfg.killauraRange);
                                       if (target != null) {
-                                          applyRotation(client, target.getBoundingBox().getCenter(), cfg, cfg.killauraRotationMode, 100, cfg.killauraSilent, 0, cfg.killauraFreelook);
-                                          
-                                          if (client.gameMode != null && target.isAlive()) {
-                                              client.gameMode.attack(client.player, target);
-                                              client.player.swing(InteractionHand.MAIN_HAND);
+                                          Vec3 hitVec = target.position();
+                                          boolean silentRot = false;
+                                          boolean throughWalls = false;
+
+                                          switch (cfg.killauraMode) {
+                                              case 1: silentRot = false; throughWalls = false; break; // Normal
+                                              case 2: silentRot = true; throughWalls = false; break; // Silent
+                                              case 3: silentRot = true; throughWalls = true; break; // Through Wall (Silent)
+                                              case 4: Deque<Vec3> h = positionHistory.get(target); if (h != null && !h.isEmpty()) hitVec = h.peekFirst(); silentRot = true; break; // Backtrack
+                                              case 5: cfg.killauraRange = 6.0f; silentRot = false; break; // Reach (6 blocks)
+                                              case 6: silentRot = false; throughWalls = true; break; // Through Wall (Normal)
+                                              case 7: silentRot = true; hitVec = target.getBoundingBox().getCenter(); break; // Polar Bypass (Center)
+                                              case 8: silentRot = true; hitVec = target.getBoundingBox().getCenter(); hitVec = hitVec.add((Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3); break; // Shard Bypass (Random)
+                                              case 9: if (tickCounter % 2 != 0) return; silentRot = true; throughWalls = true; break; // TickSync
+                                              case 10: silentRot = true; throughWalls = true; cfg.killauraRange = 6.0f; break; // GodMode
                                           }
-                                          lastTriggerTime = System.currentTimeMillis();
+
+                                          if (throughWalls || client.player.hasLineOfSight(target)) {
+                                              applyRotation(client, hitVec, cfg, cfg.killauraMode == 1 ? 0 : 1, 100, silentRot, 0);
+                                              if (client.gameMode != null && target.isAlive()) {
+                                                  client.gameMode.attack(client.player, target);
+                                                  client.player.swing(InteractionHand.MAIN_HAND);
+                                              }
+                                              lastTriggerTime = System.currentTimeMillis();
+                                          }
                                       }
                                   }
                               }
@@ -244,28 +267,20 @@ jobs:
                       }
 
                       // --- TRIGGERBOT ---
-                      if (cfg.triggerbotEnabled && triggerToggled && client.screen == null) {
+                      if (cfg.triggerbotEnabled && trigToggled && client.screen == null) {
                           if (client.player.onGround()) canTrigger = true;
-
                           boolean falling = !client.player.onGround() && client.player.getDeltaMovement().y < 0 && client.player.fallDistance > 0;
                           Entity target = client.crosshairPickEntity;
-                          
-                          boolean isSafeToHit = !cfg.smartTrigger || client.player.hurtTime == 0;
-
-                          if (canTrigger && falling && target != null && isSafeToHit && client.player.distanceTo(target) <= cfg.triggerMaxDist) {
+                          boolean safe = !cfg.smartTrigger || client.player.hurtTime == 0;
+                          if (canTrigger && falling && target != null && safe && client.player.distanceTo(target) <= cfg.triggerMaxDist) {
                               if (System.currentTimeMillis() - lastTriggerTime >= cfg.triggerDelay) {
-                                  if (client.gameMode != null && target.isAlive()) {
-                                      client.gameMode.attack(client.player, target);
-                                      client.player.swing(InteractionHand.MAIN_HAND);
-                                      client.player.resetAttackStrengthTicker();
-                                  }
-                                  canTrigger = false;
-                                  lastTriggerTime = System.currentTimeMillis();
+                                  if (client.gameMode != null) { client.gameMode.attack(client.player, target); client.player.swing(InteractionHand.MAIN_HAND); }
+                                  canTrigger = false; lastTriggerTime = System.currentTimeMillis();
                               }
                           }
                       }
 
-                      // --- SPRINT RESET ---
+                      // --- SPRINT ---
                       long now = System.currentTimeMillis();
                       boolean activeReset = false;
                       if (cfg.sprintEnabled && resetting) {
@@ -273,252 +288,56 @@ jobs:
                               activeReset = true;
                               if (cfg.sprintMode.equals("W_TAP")) client.options.keyUp.setDown(false);
                               else if (cfg.sprintMode.equals("S_TAP")) { client.options.keyUp.setDown(false); client.options.keyDown.setDown(true); }
-                              else if (cfg.sprintMode.equals("SPRINT")) client.options.keySprint.setDown(false);
-                          } else if (now > resetEnd) {
-                              restoreKeys(client);
-                              resetting = false;
-                          }
+                          } else if (now > resetEnd) { restoreKeys(client); resetting = false; }
                       }
-
                       if (cfg.autoSprint && client.screen == null && !activeReset) {
-                          if (client.options.keyUp.isDown() && !client.player.isShiftKeyDown()) {
-                              client.options.keySprint.setDown(true);
-                          } else {
-                              restoreKeys(client);
-                          }
+                          if (client.options.keyUp.isDown() && !client.player.isShiftKeyDown()) client.options.keySprint.setDown(true); else restoreKeys(client);
                       }
                   });
               }
 
-              private static void applyRotation(Minecraft mc, Vec3 target, ModConfig cfg, int mode, int speed, boolean silent, int smoothness, boolean freelook) {
-                  LocalPlayer player = mc.player;
-                  float[] rots = getRotations(player.getEyePosition(), target);
-                  float targetYaw = rots[0];
-                  float targetPitch = rots[1];
-
-                  float deltaYaw = Mth.wrapDegrees(targetYaw - player.getYRot());
-                  float deltaPitch = targetPitch - player.getXRot();
-
-                  float newYaw = player.getYRot();
-                  float newPitch = player.getXRot();
-
-                  float speedMult = speed / 100.0f;
-                  float smoothMult = 1.0f - (smoothness / 100f * 0.8f);
-                  float step = speedMult * smoothMult * 10.0f; 
-
-                  switch (mode) {
-                      case 0: newYaw = targetYaw; newPitch = targetPitch; break;
-                      case 1: 
-                          newYaw += Mth.clamp(deltaYaw, -step, step);
-                          newPitch += Mth.clamp(deltaPitch, -step, step);
-                          break;
-                      case 2: 
-                          if (Math.abs(deltaYaw) > 0.5f) newYaw += Mth.clamp(deltaYaw, -step, step);
-                          else newPitch += Mth.clamp(deltaPitch, -step, step);
-                          break;
-                      case 3: 
-                          float easeFactor = Math.min(1.0f, Math.abs(deltaYaw) / 15.0f + 0.1f);
-                          newYaw += Mth.clamp(deltaYaw, -step * easeFactor, step * easeFactor);
-                          newPitch += Mth.clamp(deltaPitch, -step * easeFactor, step * easeFactor);
-                          break;
-                      case 4: 
-                          float sineWave = (float) Math.sin(System.currentTimeMillis() % 1000 / 1000.0 * Math.PI * 2) * (step * 0.2f);
-                          newYaw += Mth.clamp(deltaYaw, -step, step) + sineWave;
-                          newPitch += Mth.clamp(deltaPitch, -step, step) + sineWave;
-                          break;
-                  }
-
-                  newYaw += (Math.random() - 0.5) * 0.2;
-                  newPitch += (Math.random() - 0.5) * 0.2;
-                  newPitch = Mth.clamp(newPitch, -90.0f, 90.0f);
-
-                  if (silent || freelook) {
-                      if (player.connection != null) {
-                          player.connection.send(new ServerboundMovePlayerPacket.Rot(newYaw, newPitch, player.onGround(), false));
-                      }
-                  } else {
-                      player.setYRot(newYaw);
-                      player.setXRot(newPitch);
-                  }
+              private static void applyRotation(Minecraft mc, Vec3 target, ModConfig cfg, int mode, int speed, boolean silent, int smoothness) {
+                  LocalPlayer p = mc.player;
+                  float[] r = getRotations(p.getEyePosition(), target);
+                  float dY = Mth.wrapDegrees(r[0] - p.getYRot()), dP = r[1] - p.getXRot();
+                  float step = (speed / 100f) * (1f - (smoothness / 100f * 0.8f)) * 10f;
+                  float nY = p.getYRot(), nP = p.getXRot();
+                  if (mode == 0) { nY = r[0]; nP = r[1]; }
+                  else if (mode == 1) { nY += Mth.clamp(dY, -step, step); nP += Mth.clamp(dP, -step, step); }
+                  nY += (Math.random() - 0.5) * 0.2; nP += (Math.random() - 0.5) * 0.2; nP = Mth.clamp(nP, -90f, 90f);
+                  if (silent) p.connection.send(new ServerboundMovePlayerPacket.Rot(nY, nP, p.onGround(), false));
+                  else { p.setYRot(nY); p.setXRot(nP); }
               }
 
-              private static Entity getBestTarget(Minecraft mc, float fov, boolean wallCheck) {
-                  Entity best = null; double bestDist = Double.MAX_VALUE;
+              private static Entity getBestTarget(Minecraft mc, float fov, boolean wall) {
+                  Entity best = null; double bd = 6.0;
                   for (Entity e : mc.level.entitiesForRendering()) {
-                      if (e == mc.player || !e.isAlive()) continue;
-                      double dist = mc.player.distanceTo(e);
-                      if (dist <= 6.0) { 
-                          if (wallCheck && !mc.player.hasLineOfSight(e)) continue;
-                          Vec3 targetVec = e.getEyePosition().subtract(mc.player.getEyePosition()).normalize();
-                          double angle = Math.toDegrees(Math.acos(mc.player.getLookAngle().dot(targetVec)));
-                          if (angle <= fov / 2.0) {
-                              if (dist < bestDist) { bestDist = dist; best = e; }
-                          }
-                      }
+                      if (e == mc.player || !e.isAlive() || (wall && !mc.player.hasLineOfSight(e))) continue;
+                      double d = mc.player.distanceTo(e);
+                      if (d <= bd && Math.toDegrees(Math.acos(mc.player.getLookAngle().dot(e.getEyePosition().subtract(mc.player.getEyePosition()).normalize()))) <= fov/2) { bd = d; best = e; }
                   }
                   return best;
               }
 
-              private static Entity getClosestEntity(Minecraft mc, float range, boolean wallCheck) {
-                  Entity best = null; double bestDist = range;
+              private static Entity getClosestEntity(Minecraft mc, float range) {
+                  Entity best = null; double bd = range;
                   for (Entity e : mc.level.entitiesForRendering()) {
                       if (e == mc.player || !e.isAlive()) continue;
-                      double dist = mc.player.distanceTo(e);
-                      if (dist <= bestDist) {
-                          if (wallCheck && !mc.player.hasLineOfSight(e)) continue;
-                          bestDist = dist; best = e;
-                      }
+                      double d = mc.player.distanceTo(e); if (d <= bd) { bd = d; best = e; }
                   }
                   return best;
               }
 
-              private static Vec3 getTargetPoint(LivingEntity target, boolean hitbox, boolean randomPoint) {
-                  if (hitbox) {
-                      AABB box = target.getBoundingBox();
-                      if (randomPoint) {
-                          return new Vec3(box.minX + Math.random() * (box.maxX - box.minX), box.minY + Math.random() * (box.maxY - box.minY), box.minZ + Math.random() * (box.maxZ - box.minZ));
-                      }
-                      return new Vec3(target.getX(), target.getY() + target.getBbHeight() / 2, target.getZ());
-                  }
-                  return target.getEyePosition();
+              private static float[] getRotations(Vec3 f, Vec3 t) {
+                  double dx = t.x - f.x, dy = t.y - f.y, dz = t.z - f.z;
+                  return new float[]{(float)(Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F, (float)(-(Math.atan2(dy, Math.sqrt(dx*dx + dz*dz)) * 180.0 / Math.PI))};
               }
 
-              private static float[] getRotations(Vec3 from, Vec3 to) {
-                  double dx = to.x - from.x; double dy = to.y - from.y; double dz = to.z - from.z;
-                  double distXZ = Math.sqrt(dx * dx + dz * dz);
-                  return new float[]{(float)(Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F, (float)(-(Math.atan2(dy, distXZ) * 180.0 / Math.PI))};
-              }
-
-              private static void restoreKeys(Minecraft client) {
-                  long win = client.getWindow().getWindow();
-                  InputConstants.Key upKey = InputConstants.getKey(client.options.keyUp.saveString());
-                  client.options.keyUp.setDown(InputConstants.isKeyDown(win, upKey.getValue()));
-                  InputConstants.Key downKey = InputConstants.getKey(client.options.keyDown.saveString());
-                  client.options.keyDown.setDown(InputConstants.isKeyDown(win, downKey.getValue()));
-                  InputConstants.Key sprintKey = InputConstants.getKey(client.options.keySprint.saveString());
-                  client.options.keySprint.setDown(InputConstants.isKeyDown(win, sprintKey.getValue()));
-              }
-          }
-          EOF
-
-          cat << 'EOF' > src/client/java/com/example/client/ModConfigScreen.java
-          package com.example.client;
-
-          import net.minecraft.client.gui.GuiGraphics;
-          import net.minecraft.client.gui.components.AbstractSliderButton;
-          import net.minecraft.client.gui.components.Button;
-          import net.minecraft.client.gui.screens.Screen;
-          import net.minecraft.network.chat.Component;
-          import org.lwjgl.glfw.GLFW;
-
-          public class ModConfigScreen extends Screen {
-              private int tab = 0;
-              private int binding = 0; // 1=trig, 2=aim, 3=ka
-
-              public ModConfigScreen() { super(Component.literal("Combat Utils")); }
-
-              @Override
-              protected void init() {
-                  this.clearWidgets();
-                  ModConfig cfg = ModConfig.INSTANCE;
-                  int x = this.width / 2 - 150, y = this.height / 2 - 140;
-
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 0 ? "§b[Spr]" : "Spr"), b -> { tab = 0; init(); }).bounds(x + 5, y + 25, 65, 20).build());
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 1 ? "§b[Trig]" : "Trig"), b -> { tab = 1; init(); }).bounds(x + 75, y + 25, 65, 20).build());
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 2 ? "§b[Aim]" : "Aim"), b -> { tab = 2; init(); }).bounds(x + 145, y + 25, 65, 20).build());
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 3 ? "§b[KA]" : "KA"), b -> { tab = 3; init(); }).bounds(x + 215, y + 25, 65, 20).build());
-
-                  if (tab == 0) {
-                      this.addRenderableWidget(Button.builder(Component.literal("Sprint Reset: " + (cfg.sprintEnabled ? "§aON" : "§cOFF")), b -> { cfg.sprintEnabled = !cfg.sprintEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("AutoSprint: " + (cfg.autoSprint ? "§aON" : "§cOFF")), b -> { cfg.autoSprint = !cfg.autoSprint; ModConfig.save(); init(); }).bounds(x + 10, y + 80, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("No Jump Delay: " + (cfg.noJumpDelay ? "§aON" : "§cOFF")), b -> { cfg.noJumpDelay = !cfg.noJumpDelay; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Mode: §e" + cfg.sprintMode), b -> { 
-                          if (cfg.sprintMode.equals("W_TAP")) cfg.sprintMode = "S_TAP";
-                          else if (cfg.sprintMode.equals("S_TAP")) cfg.sprintMode = "SPRINT";
-                          else cfg.sprintMode = "W_TAP";
-                          ModConfig.save(); init();
-                      }).bounds(x + 10, y + 130, 280, 20).build());
-                  } else if (tab == 1) {
-                      this.addRenderableWidget(Button.builder(Component.literal("Triggerbot: " + (cfg.triggerbotEnabled ? "§aON" : "§cOFF")), b -> { cfg.triggerbotEnabled = !cfg.triggerbotEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal(binding == 1 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.triggerbotKey)), b -> { binding = 1; init(); }).bounds(x + 10, y + 80, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Smart Trigger: " + (cfg.smartTrigger ? "§aON" : "§cOFF")), b -> { cfg.smartTrigger = !cfg.smartTrigger; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 280, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 280, 20, "Max Dist", (long)(cfg.triggerMaxDist*10), 10, 60, val -> { cfg.triggerMaxDist = val / 10f; ModConfig.save(); }));
-                  } else if (tab == 2) {
-                      this.addRenderableWidget(Button.builder(Component.literal("Aim Assist: " + (cfg.aimAssistEnabled ? "§aON" : "§cOFF")), b -> { cfg.aimAssistEnabled = !cfg.aimAssistEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 50, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal(binding == 2 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.aimKey)), b -> { binding = 2; init(); }).bounds(x + 10, y + 75, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Mode: " + getRotModeName(cfg.aimMode)), b -> { cfg.aimMode = (cfg.aimMode + 1) % 5; ModConfig.save(); init(); }).bounds(x + 10, y + 100, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Silent Aim: " + (cfg.aimSilent ? "§aON" : "§cOFF")), b -> { cfg.aimSilent = !cfg.aimSilent; ModConfig.save(); init(); }).bounds(x + 10, y + 125, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Wall Check: " + (cfg.aimWallCheck ? "§aON" : "§cOFF")), b -> { cfg.aimWallCheck = !cfg.aimWallCheck; ModConfig.save(); init(); }).bounds(x + 10, y + 150, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Random Point: " + (cfg.randomAimPoint ? "§aON" : "§cOFF")), b -> { cfg.randomAimPoint = !cfg.randomAimPoint; ModConfig.save(); init(); }).bounds(x + 10, y + 175, 280, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 200, 280, 20, "FOV", (long)cfg.aimFov, 10, 360, val -> { cfg.aimFov = (float)val; ModConfig.save(); }));
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 225, 280, 20, "Speed", cfg.aimSpeed, 1, 100, val -> { cfg.aimSpeed = (int)val; ModConfig.save(); }));
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 250, 280, 20, "Smoothness", cfg.aimSmoothness, 0, 100, val -> { cfg.aimSmoothness = (int)val; ModConfig.save(); }));
-                  } else {
-                      this.addRenderableWidget(Button.builder(Component.literal("Killaura: " + (cfg.killauraEnabled ? "§aON" : "§cOFF")), b -> { cfg.killauraEnabled = !cfg.killauraEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 50, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal(binding == 3 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.killauraKey)), b -> { binding = 3; init(); }).bounds(x + 10, y + 75, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Mode: " + getRotModeName(cfg.killauraRotationMode)), b -> { cfg.killauraRotationMode = (cfg.killauraRotationMode + 1) % 5; ModConfig.save(); init(); }).bounds(x + 10, y + 100, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Sword Only: " + (cfg.swordOnly ? "§aON" : "§cOFF")), b -> { cfg.swordOnly = !cfg.swordOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 125, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Silent: " + (cfg.killauraSilent ? "§aON" : "§cOFF")), b -> { cfg.killauraSilent = !cfg.killauraSilent; ModConfig.save(); init(); }).bounds(x + 10, y + 150, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Freelook: " + (cfg.killauraFreelook ? "§aON" : "§cOFF")), b -> { cfg.killauraFreelook = !cfg.killauraFreelook; ModConfig.save(); init(); }).bounds(x + 10, y + 175, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Crit Only: " + (cfg.killauraCritOnly ? "§aON" : "§cOFF")), b -> { cfg.killauraCritOnly = !cfg.killauraCritOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 200, 280, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Wall Check: " + (cfg.killauraWallCheck ? "§aON" : "§cOFF")), b -> { cfg.killauraWallCheck = !cfg.killauraWallCheck; ModConfig.save(); init(); }).bounds(x + 10, y + 225, 280, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 250, 280, 20, "Range", (long)(cfg.killauraRange*10), 10, 60, val -> { cfg.killauraRange = val / 10f; ModConfig.save(); }));
-                  }
-              }
-
-              private String getRotModeName(int mode) {
-                  return switch (mode) {
-                      case 0 -> "§cSnap";
-                      case 1 -> "§aSmooth";
-                      case 2 -> "§ePolar";
-                      case 3 -> "§bEaseOut";
-                      default -> "§dSine";
-                  };
-              }
-
-              private String getKeyName(int key) { return GLFW.glfwGetKeyName(key, 0) != null ? GLFW.glfwGetKeyName(key, 0).toUpperCase() : "NONE"; }
-
-              @Override
-              public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-                  if (binding != 0) {
-                      ModConfig cfg = ModConfig.INSTANCE;
-                      if (binding == 1) cfg.triggerbotKey = keyCode;
-                      else if (binding == 2) cfg.aimKey = keyCode;
-                      else if (binding == 3) cfg.killauraKey = keyCode;
-                      binding = 0; ModConfig.save(); init(); return true;
-                  }
-                  return super.keyPressed(keyCode, scanCode, modifiers);
-              }
-
-              @Override
-              public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
-                  this.renderBackground(context, mouseX, mouseY, delta);
-                  int x = this.width / 2 - 150, y = this.height / 2 - 140;
-                  context.fill(x - 1, y - 1, x + 291, y + 281, 0xFF00E5FF);
-                  context.fill(x, y, x + 290, y + 280, 0xE612151E);
-                  context.drawCenteredString(this.font, "§b§lCombat Utils", x + 145, y + 10, 0xFFFFFF);
-                  if (tab == 2) {
-                      context.drawString(this.font, "FOV", x + 10, y + 205, 0xFFFFFF, false);
-                      context.drawString(this.font, "Speed", x + 10, y + 230, 0xFFFFFF, false);
-                      context.drawString(this.font, "Smoothness", x + 10, y + 255, 0xFFFFFF, false);
-                  } else if (tab == 3) {
-                      context.drawString(this.font, "Range", x + 10, y + 255, 0xFFFFFF, false);
-                  }
-                  super.render(context, mouseX, mouseY, delta);
-              }
-
-              @Override
-              public boolean isPauseScreen() { return false; }
-
-              private static class SliderWidget extends AbstractSliderButton {
-                  private final java.util.function.LongConsumer onChange;
-                  private final String prefix; private final long min, max;
-                  public SliderWidget(int x, int y, int w, int h, String prefix, long current, long min, long max, java.util.function.LongConsumer onChange) {
-                      super(x, y, w, h, Component.empty(), (double) (current - min) / (max - min));
-                      this.onChange = onChange; this.prefix = prefix; this.min = min; this.max = max; updateMessage();
-                  }
-                  @Override protected void updateMessage() { long val = Math.round(min + (max - min) * this.value); this.setMessage(Component.literal(prefix + ": §e" + val)); }
-                  @Override protected void applyValue() { onChange.accept(Math.round(min + (max - min) * this.value)); }
+              private static void restoreKeys(Minecraft c) {
+                  long w = c.getWindow().getWindow();
+                  c.options.keyUp.setDown(InputConstants.isKeyDown(w, InputConstants.getKey(c.options.keyUp.saveString()).getValue()));
+                  c.options.keyDown.setDown(InputConstants.isKeyDown(w, InputConstants.getKey(c.options.keyDown.saveString()).getValue()));
+                  c.options.keySprint.setDown(InputConstants.isKeyDown(w, InputConstants.getKey(c.options.keySprint.saveString()).getValue()));
               }
           }
           EOF
