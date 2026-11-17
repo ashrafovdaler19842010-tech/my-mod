@@ -13,13 +13,19 @@ jobs:
           sed -i 's/"fabricloader": "[^"]*"/"fabricloader": ">=0.16.0"/g' src/main/resources/fabric.mod.json
           sed -i 's/com.example.client.TemplateModClient/com.example.client.CombatUtilsClient/g' src/main/resources/fabric.mod.json
           
-          mkdir -p src/main/resources
+          # Настройка Access Widener для поля noJumpDelay
           cat << 'EOF' > src/main/resources/template-mod.accesswidener
           accessWidener v2 named
           accessible field net/minecraft/world/entity/LivingEntity noJumpDelay I
           EOF
           
-          sed -i 's/"entrypoints": {/"accessWidener": "template-mod.accesswidener",\n  "entrypoints": {/g' src/main/resources/fabric.mod.json
+          if ! grep -q "accessWidener" src/main/resources/fabric.mod.json; then
+            sed -i 's/"entrypoints": {/"accessWidener": "template-mod.accesswidener",\n  "entrypoints": {/g' src/main/resources/fabric.mod.json
+          fi
+          
+          if ! grep -q "accessWidenerPath" build.gradle; then
+            echo "loom { accessWidenerPath = file(\"src/main/resources/template-mod.accesswidener\") }" >> build.gradle
+          fi
 
           cat << 'EOF' > src/client/resources/template-mod.client.mixins.json
           {
@@ -176,7 +182,10 @@ jobs:
                           rCtrlWasDown = true;
                       } else rCtrlWasDown = false;
 
-                      if (cfg.noJumpDelay && client.options.keyJump.isDown()) client.player.noJumpDelay = 0;
+                      // Безопасный сброс задержки прыжка
+                      if (cfg.noJumpDelay && client.options.keyJump.isDown()) {
+                          client.player.noJumpDelay = 0;
+                      }
 
                       if (client.screen == null) {
                           if (cfg.triggerbotEnabled) { boolean d = InputConstants.isKeyDown(win, cfg.triggerbotKey); if (d && !tKey) trigToggled = !trigToggled; tKey = d; }
@@ -188,10 +197,13 @@ jobs:
                       // --- SPEED HACK MODES ---
                       if (cfg.speedEnabled && spdToggled && client.screen == null) {
                           switch (cfg.speedMode) {
-                              case 1: client.timer.msPerTick = 50.0f / cfg.speedValue; break; // Timer
+                              case 1: // FastFall
+                                  if (client.player.getDeltaMovement().y < 0) {
+                                      client.player.setDeltaMovement(client.player.getDeltaMovement().x, -cfg.speedValue, client.player.getDeltaMovement().z);
+                                  }
+                                  break;
                               case 2: if (client.player.onGround() && client.options.keyUp.isDown()) client.player.jumpFromGround(); break; // LowHop
                               case 3: if (!client.player.onGround() && client.options.keyUp.isDown()) { Vec3 m = client.player.getDeltaMovement(); client.player.setDeltaMovement(m.x * cfg.speedValue, m.y, m.z * cfg.speedValue); } break; // Strafe
-                              case 4: if (client.player.getDeltaMovement().y < 0) client.player.setDeltaMovement(client.player.getDeltaMovement().x, -cfg.speedValue, client.player.getDeltaMovement().z); break; // FastFall
                               case 5: if (!client.player.isFallFlying()) client.player.connection.send(new ServerboundPlayerCommandPacket(client.player, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING)); break; // Elytra Spoof
                               case 6: if (client.player.onGround() && client.options.keyUp.isDown()) { Vec3 m = client.player.getDeltaMovement(); client.player.setDeltaMovement(m.x * 1.2, m.y, m.z * 1.2); } break; // Ground
                               case 7: if (client.player.isUsingItem()) client.player.setDeltaMovement(client.player.getDeltaMovement().multiply(1.3, 1, 1.3)); break; // NoSlow
@@ -199,7 +211,7 @@ jobs:
                               case 9: if (client.player.horizontalCollision) client.player.setDeltaMovement(client.player.getDeltaMovement().x, 0.5, client.player.getDeltaMovement().z); break; // Step
                               case 10: if (tickCounter % 2 == 0) client.player.connection.send(new ServerboundMovePlayerPacket.Pos(client.player.getX() + cfg.speedValue, client.player.getY(), client.player.getZ(), client.player.onGround(), false)); break; // PacketFlood
                           }
-                      } else if (client.timer.msPerTick != 50.0f) client.timer.msPerTick = 50.0f;
+                      }
 
                       // --- BACKTRACK TRACKER ---
                       if (client.level != null) {
@@ -419,7 +431,7 @@ jobs:
 
               private String getSpeedModeName(int mode) {
                   return switch (mode) {
-                      case 1 -> "Timer"; case 2 -> "LowHop"; case 3 -> "Strafe"; case 4 -> "FastFall"; case 5 -> "Elytra";
+                      case 1 -> "FastFall"; case 2 -> "LowHop"; case 3 -> "Strafe"; case 5 -> "Elytra";
                       case 6 -> "Ground"; case 7 -> "NoSlow"; case 8 -> "Bunny"; case 9 -> "Step"; case 10 -> "PacketFlood";
                       default -> "Unknown";
                   };
