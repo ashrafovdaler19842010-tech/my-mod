@@ -465,7 +465,7 @@ jobs:
           EOF
       - uses: actions/setup-java@v4
         with:
-          java-version: '21'
+          java-version: '25'
           distribution: 'temurin'
       - run: chmod +x gradlew && ./gradlew build
       - uses: actions/upload-artifact@v4
