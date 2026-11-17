@@ -94,12 +94,11 @@ jobs:
           import net.minecraft.client.gui.screens.inventory.InventoryScreen;
           import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
           import net.minecraft.client.player.LocalPlayer;
-          import net.minecraft.core.component.DataComponentTypes;
+          import net.minecraft.component.DataComponentTypes;
           import net.minecraft.network.chat.Component;
           import net.minecraft.world.InteractionResult;
           import net.minecraft.world.entity.Entity;
           import net.minecraft.world.item.ItemStack;
-          import net.minecraft.world.item.enchantment.EnchantmentHelper;
           import net.minecraft.world.inventory.ClickType;
           import org.lwjgl.glfw.GLFW;
 
@@ -315,12 +314,11 @@ jobs:
 
                       if (stack.isEnchanted()) {
                           sb.append(" | Зачарования: ");
-                          EnchantmentHelper.getEnchantments(stack).forEach((ench, lvl) -> 
+                          stack.getEnchantments().forEach((ench, lvl) -> 
                               sb.append(ench.value().description().getString()).append(" ").append(lvl).append(", ")
                           );
                       }
 
-                      // Замена старых NBT-тегов на новые компоненты (DataComponents) в 1.21+
                       if (stack.has(DataComponentTypes.CUSTOM_DATA)) {
                           sb.append(" | NBT: ").append(stack.get(DataComponentTypes.CUSTOM_DATA).toString());
                       }
