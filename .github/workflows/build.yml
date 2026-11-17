@@ -11,31 +11,15 @@ jobs:
       - name: Build Mod Sources
         run: |
           sed -i 's/"fabricloader": "[^"]*"/"fabricloader": ">=0.16.0"/g' src/main/resources/fabric.mod.json
-          sed -i 's/com.example.client.TemplateModClient/com.example.client.RenderWorker/g' src/main/resources/fabric.mod.json
+          sed -i 's/com.example.client.TemplateModClient/com.example.client.AuraModClient/g' src/main/resources/fabric.mod.json
           
-          # Исправление Access Widener (вставляем в самый верх build.gradle)
-          cat << 'EOF' > src/main/resources/template-mod.accesswidener
-          accessWidener v2 named
-          accessible field net/minecraft/world/entity/LivingEntity noJumpDelay I
-          EOF
-          
-          if ! grep -q "accessWidener" src/main/resources/fabric.mod.json; then
-            sed -i 's/"entrypoints": {/"accessWidener": "template-mod.accesswidener",\n  "entrypoints": {/g' src/main/resources/fabric.mod.json
-          fi
-          
-          if ! grep -q "accessWidenerPath" build.gradle; then
-            sed -i '1s/^/loom { accessWidenerPath = file("src\/main\/resources\/template-mod.accesswidener") }\n/' build.gradle
-          fi
-
           cat << 'EOF' > src/client/resources/template-mod.client.mixins.json
           {
             "required": true,
             "minVersion": "0.8",
             "package": "com.example.client.mixin",
             "compatibilityLevel": "JAVA_21",
-            "client": [
-              "EntityMixin"
-            ],
+            "client": [],
             "injectors": {
               "defaultRequire": 1
             }
@@ -45,60 +29,9 @@ jobs:
           echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
 
           rm -rf src/client/java/com/example/client/*
-          mkdir -p src/client/java/com/example/client/mixin
+          mkdir -p src/client/java/com/example/client
           
-          # НАСТРОЙКИ
-          cat << 'EOF' > src/client/java/com/example/client/RenderSettings.java
-          package com.example.client;
-          import com.google.gson.Gson;
-          import com.google.gson.GsonBuilder;
-          import net.fabricmc.loader.api.FabricLoader;
-          import java.io.File;
-          import java.io.FileReader;
-          import java.io.FileWriter;
-
-          public class RenderSettings {
-              private static final File CONFIG_FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "nvidia-profile.json");
-              public boolean sprintEnabled = true; 
-              public int sprintKey = 74; // J
-              public boolean killEnabled = false; 
-              public int killKey = 67; // C
-              public float killRange = 3.0f;
-              public boolean freelook = true;
-              public boolean healthBypass = true;
-              
-              public static RenderSettings INSTANCE = new RenderSettings();
-              public static void save() { try (FileWriter w = new FileWriter(CONFIG_FILE)) { new GsonBuilder().setPrettyPrinting().create().toJson(INSTANCE, w); } catch (Exception ignored) {} }
-              public static void load() {
-                  if (CONFIG_FILE.exists()) { try (FileReader r = new FileReader(CONFIG_FILE)) { RenderSettings l = new Gson().fromJson(r, RenderSettings.class); if (l != null) INSTANCE = l; } catch (Exception ignored) {} }
-              }
-          }
-          EOF
-
-          # MIXIN (Снятие инвиза для игроков)
-          cat << 'EOF' > src/client/java/com/example/client/mixin/EntityMixin.java
-          package com.example.client.mixin;
-          import com.example.client.RenderSettings;
-          import net.minecraft.world.entity.Entity;
-          import net.minecraft.world.entity.player.Player;
-          import org.spongepowered.asm.mixin.Mixin;
-          import org.spongepowered.asm.mixin.injection.At;
-          import org.spongepowered.asm.mixin.injection.Inject;
-          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
-
-          @Mixin(Entity.class)
-          public class EntityMixin {
-              @Inject(method = "isInvisibleTo", at = @At("HEAD"), cancellable = true)
-              public void onIsInvisibleTo(Player player, CallbackInfoReturnable<Boolean> cir) {
-                  if (RenderSettings.INSTANCE.healthBypass && (Object)this instanceof Player) {
-                      cir.setReturnValue(false);
-                  }
-              }
-          }
-          EOF
-
-          # ЯДРО С БЕЗОПАСНЫМ ОБХОДОМ POLAR
-          cat << 'EOF' > src/client/java/com/example/client/RenderWorker.java
+          cat << 'EOF' > src/client/java/com/example/client/AuraModClient.java
           package com.example.client;
 
           import com.mojang.blaze3d.platform.InputConstants;
@@ -108,165 +41,111 @@ jobs:
           import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
           import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
           import net.minecraft.sounds.SoundEvents;
-          import net.minecraft.tags.ItemTags;
           import net.minecraft.util.Mth;
           import net.minecraft.world.InteractionHand;
           import net.minecraft.world.entity.Entity;
           import net.minecraft.world.entity.LivingEntity;
-          import net.minecraft.world.item.ItemStack;
           import net.minecraft.world.phys.Vec3;
+          import org.lwjgl.glfw.GLFW;
 
-          public class RenderWorker implements ClientModInitializer {
-              private static boolean sprintToggled = true, killToggled = false;
-              private static boolean jKey, cKey;
-              
-              // Спринт
-              private static boolean isResetting = false;
-              private static long resetTimer = 0;
-              
-              // Киллка (Безопасный фрилук)
-              private static LivingEntity target = null;
-              private static long lastAttack = 0;
-              private static int killState = 0; // 0 - ждем, 1 - отправлен пакет, ждем тик, 2 - бьем
-              private static float savedYaw = 0, savedPitch = 0;
-              private static float targetYaw = 0, targetPitch = 0;
+          public class AuraModClient implements ClientModInitializer {
+
+              private static boolean auraEnabled = false;
+              private static boolean xKeyWasDown = false;
+              private static long lastAttackTime = 0;
+              private static int attackDelay = 150;
 
               @Override
               public void onInitializeClient() {
-                  RenderSettings.load();
-
                   ClientTickEvents.END_CLIENT_TICK.register(client -> {
                       if (client.player == null || client.getWindow() == null) return;
                       long win = client.getWindow().getWindow();
-                      RenderSettings cfg = RenderSettings.INSTANCE;
 
-                      // Бинды
-                      boolean j = InputConstants.isKeyDown(win, cfg.sprintKey);
-                      if (j && !jKey) { sprintToggled = !sprintToggled; playSound(client, sprintToggled); }
-                      jKey = j;
+                      // Обработка нажатия X (код 88)
+                      boolean xDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_X);
+                      if (xDown && !xKeyWasDown) {
+                          auraEnabled = !auraEnabled;
+                          // Звук вкл/выкл
+                          client.player.playSound(auraEnabled ? SoundEvents.EXPERIENCE_ORB_PICKUP : SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
+                      }
+                      xKeyWasDown = xDown;
 
-                      boolean c = InputConstants.isKeyDown(win, cfg.killKey);
-                      if (c && !cKey) { killToggled = !killToggled; playSound(client, killToggled); if(killToggled) { target = null; killState = 0; } }
-                      cKey = c;
+                      // Если килка выключена или открыт инвентарь - ничего не делаем
+                      if (!auraEnabled || client.screen != null) return;
 
-                      // 1) СПРИНТ ДО УДАРА
-                      if (client.options.keyAttack.isDown() && !isResetting && client.screen == null) {
-                          Entity hit = client.crosshairPickEntity;
-                          if (hit != null && client.player.fallDistance > 0 && !client.player.onGround()) {
-                              isResetting = true;
-                              resetTimer = System.currentTimeMillis() + 55; 
-                              
-                              // Отправляем пакет остановки спринта (Обход для крита)
-                              if (client.player.isSprinting()) {
-                                  client.player.connection.send(new ServerboundPlayerCommandPacket(client.player, ServerboundPlayerCommandPacket.Action.STOP_SPRINTING));
-                              }
-                              
-                              client.options.keyUp.setDown(false); 
-                              client.options.keyDown.setDown(true); 
-                              return; 
-                          }
+                      // Проверка кулдауна атаки (чтобы не спамить)
+                      if (client.player.getAttackStrengthScale(0.5f) < 1.0f) return;
+                      if (System.currentTimeMillis() - lastAttackTime < attackDelay) return;
+
+                      // Ищем цель
+                      LivingEntity target = getClosestEntity(client, 3.5f);
+                      if (target == null) return;
+
+                      // 1. СБРОС СПРИНТА (Обход Grim/Matrix для крита)
+                      if (client.player.isSprinting()) {
+                          client.player.connection.send(new ServerboundPlayerCommandPacket(client.player, ServerboundPlayerCommandPacket.Action.STOP_SPRINTING));
                       }
 
-                      if (isResetting) {
-                          if (System.currentTimeMillis() >= resetTimer) {
-                              Entity hit = client.crosshairPickEntity;
-                              if (hit != null && client.gameMode != null) {
-                                  client.gameMode.attack(client.player, hit);
-                                  client.player.swing(InteractionHand.MAIN_HAND);
-                              }
-                              client.options.keyDown.setDown(false);
-                              client.options.keyUp.setDown(true);
-                              isResetting = false;
-                          }
-                          return; 
+                      // 2. МАТЕМАТИКА ПОВОРОТА (Обход Polar GCD)
+                      float[] rots = getRotations(client.player, target);
+                      float targetYaw = rots[0];
+                      float targetPitch = rots[1];
+                      
+                      // Сохраняем текущие углы (Freelook)
+                      float oldYaw = client.player.getYRot();
+                      float oldPitch = client.player.getXRot();
+
+                      // 3. ОТПРАВЛЯЕМ ПАКЕТ ПОВОРОТА (Тихая наводка)
+                      client.player.connection.send(new ServerboundMovePlayerPacket.Rot(targetYaw, targetPitch, client.player.onGround(), false));
+
+                      // 4. БЬЕМ
+                      if (client.gameMode != null) {
+                          client.gameMode.attack(client.player, target);
+                          client.player.swing(InteractionHand.MAIN_HAND);
                       }
 
-                      // Авто-спринт
-                      if (sprintToggled && client.screen == null && !isResetting) {
-                          if (client.options.keyUp.isDown() && !client.player.isShiftKeyDown()) {
-                              client.options.keySprint.setDown(true);
-                          }
-                      }
+                      // 5. ВОЗВРАЩАЕМ ПАКЕТ ОБРАТНО (Чтобы сервер не спалил)
+                      client.player.connection.send(new ServerboundMovePlayerPacket.Rot(oldYaw, oldPitch, client.player.onGround(), false));
 
-                      // 2) КИЛЛКА (Freelook с задержкой на 1 тик)
-                      if (killToggled && client.screen == null) {
-                          if (target == null || !target.isAlive() || client.player.distanceTo(target) > cfg.killRange) {
-                              target = getTarget(client, cfg.killRange);
-                              killState = 0;
-                          }
-
-                          if (target != null) {
-                              ItemStack held = client.player.getMainHandItem();
-                              boolean isSword = held.is(ItemTags.SWORDS);
-                              boolean isCrit = client.player.fallDistance > 0 && !client.player.onGround();
-
-                              if (isSword && isCrit && (System.currentTimeMillis() - lastAttack > 500)) {
-                                  
-                                  if (killState == 0) {
-                                      // Сохраняем углы
-                                      savedYaw = client.player.getYRot();
-                                      savedPitch = client.player.getXRot();
-                                      
-                                      float[] rots = getRotations(client.player, target);
-                                      targetYaw = rots[0]; targetPitch = rots[1];
-                                      
-                                      // Отправляем пакет (Сервер видит наводку)
-                                      client.player.connection.send(new ServerboundMovePlayerPacket.Rot(targetYaw, targetPitch, client.player.onGround(), false));
-                                      
-                                      killState = 1; // Переходим в ожидание
-                                      return;
-                                  } 
-                                  
-                                  else if (killState == 1) {
-                                      // Ждем 1 тик (50мс), теперь Polar не спалит Post-Packet
-                                      if (client.player.getAttackStrengthScale(0.5f) >= 1.0f) {
-                                          if (client.gameMode != null) {
-                                              client.gameMode.attack(client.player, target);
-                                              client.player.swing(InteractionHand.MAIN_HAND);
-                                              client.player.resetAttackStrengthTicker();
-                                          }
-                                          
-                                          // Возвращаем камеру
-                                          if (cfg.freelook) {
-                                              client.player.connection.send(new ServerboundMovePlayerPacket.Rot(savedYaw, savedPitch, client.player.onGround(), false));
-                                          }
-                                          
-                                          lastAttack = System.currentTimeMillis();
-                                          killState = 0;
-                                      }
-                                  }
-                              }
-                          }
-                      }
+                      // Рандомизация CPS (от 100 до 250 мс)
+                      lastAttackTime = System.currentTimeMillis();
+                      attackDelay = 100 + (int)(Math.random() * 150);
                   });
               }
 
-              private static LivingEntity getTarget(Minecraft mc, float range) {
-                  LivingEntity best = null; double bestDist = range;
+              // Поиск ближайшей цели
+              private static LivingEntity getClosestEntity(Minecraft mc, float range) {
+                  LivingEntity best = null;
+                  double bestDist = range;
                   for (Entity e : mc.level.entitiesForRendering()) {
                       if (e == mc.player || !(e instanceof LivingEntity) || !e.isAlive()) continue;
                       double dist = mc.player.distanceTo(e);
-                      if (dist <= bestDist) { bestDist = dist; best = (LivingEntity) e; }
+                      if (dist <= bestDist) {
+                          bestDist = dist;
+                          best = (LivingEntity) e;
+                      }
                   }
                   return best;
               }
 
-              private static float[] getRotations(LivingEntity p, LivingEntity t) {
-                  Vec3 eye = p.getEyePosition();
-                  Vec3 pos = t.position().add(0, t.getBbHeight() * 0.5, 0);
-                  double dx = pos.x - eye.x, dy = pos.y - eye.y, dz = pos.z - eye.z, dist = Math.sqrt(dx * dx + dz * dz);
+              // Вычисление углов + обход античитов (Jitter + GCD)
+              private static float[] getRotations(LivingEntity player, LivingEntity target) {
+                  Vec3 eye = player.getEyePosition();
+                  Vec3 pos = target.position().add(0, target.getBbHeight() * 0.5, 0); // Бьем в тело
+
+                  double dx = pos.x - eye.x;
+                  double dy = pos.y - eye.y;
+                  double dz = pos.z - eye.z;
+                  double dist = Math.sqrt(dx * dx + dz * dz);
+
                   float yaw = (float)(Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F;
                   float pitch = (float)(-(Math.atan2(dy, dist) * 180.0 / Math.PI));
-                  
-                  // Небольшой рандом для обхода GCD (Polar)
-                  yaw += (Math.random() - 0.5) * 0.15f;
-                  pitch += (Math.random() - 0.5) * 0.15f;
-                  
-                  return new float[]{yaw, Mth.clamp(pitch, -90, 90)};
-              }
 
-              private static void playSound(Minecraft mc, boolean state) {
-                  if (mc.player != null) mc.player.playSound(state ? SoundEvents.EXPERIENCE_ORB_PICKUP : SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
+                  // МИКРО-ШУМ (Обход Polar/Grim на идеальные углы)
+                  yaw += (Math.random() - 0.5) * 0.4f;
+                  pitch += (Math.random() - 0.5) * 0.4f;
+
+                  return new float[]{yaw, Mth.clamp(pitch, -90.0f, 90.0f)};
               }
           }
           EOF
