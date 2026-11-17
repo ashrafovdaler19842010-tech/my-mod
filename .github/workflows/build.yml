@@ -11,11 +11,8 @@ jobs:
       - name: Build Mod Sources
         run: |
           sed -i 's/"fabricloader": "[^"]*"/"fabricloader": ">=0.16.0"/g' src/main/resources/fabric.mod.json
-          
-          # Меняем точку входа в fabric.mod.json на наш новый класс
           sed -i 's/com.example.client.TemplateModClient/com.example.client.CombatUtilsClient/g' src/main/resources/fabric.mod.json
           
-          # Исправляем JSON миксинов
           cat << 'EOF' > src/client/resources/template-mod.client.mixins.json
           {
             "required": true,
@@ -29,7 +26,6 @@ jobs:
           }
           EOF
 
-          # Компилируем под Java 21, так как игра работает на 21
           echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
 
           rm -rf src/client/java/com/example/client/*
@@ -62,6 +58,24 @@ jobs:
               public boolean critEnabled = true;
               public int critX = 10, critY = 10, critSize = 15;
               public String pinkColor = "#FF69B4", whiteColor = "#FFFFFF", redColor = "#FF0000";
+
+              // Triggerbot
+              public boolean triggerbotEnabled = false;
+              public int triggerbotKey = 67; // C
+              public int triggerDelayMs = 10;
+              public float triggerFov = 30.0f;
+              public float triggerMinDist = 1.0f;
+              public float triggerMaxDist = 3.0f;
+
+              // Aim Assist
+              public boolean aimAssistEnabled = false;
+              public int aimKey = 86; // V
+              public int aimMode = 100; // 0 = Legit, 100 = Rage
+              public float aimSpeed = 1.0f;
+              public float aimSmoothness = 1.0f;
+              public float aimJitter = 0.0f;
+              public boolean aimRandomPoint = true;
+              public boolean freelookEnabled = false;
 
               public int saveLayoutKey = 79; // O
               public int sortInventoryKey = 80; // P
@@ -107,8 +121,6 @@ jobs:
           import net.fabricmc.api.ClientModInitializer;
           import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
           import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
-          import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
-          import net.minecraft.client.KeyMapping;
           import net.minecraft.client.Minecraft;
           import net.minecraft.client.gui.GuiGraphics;
           import net.minecraft.client.gui.screens.inventory.InventoryScreen;
@@ -116,11 +128,15 @@ jobs:
           import net.minecraft.client.player.LocalPlayer;
           import net.minecraft.core.component.DataComponents;
           import net.minecraft.network.chat.Component;
-          import net.minecraft.world.InteractionResult;
+          import net.minecraft.util.Mth;
+          import net.minecraft.world.InteractionHand;
           import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.LivingEntity;
           import net.minecraft.world.item.ItemStack;
+          import net.minecraft.world.item.component.ItemLore;
           import net.minecraft.world.item.enchantment.ItemEnchantments;
           import net.minecraft.world.inventory.ClickType;
+          import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
 
           public class CombatUtilsClient implements ClientModInitializer {
@@ -135,30 +151,24 @@ jobs:
               private static int sortTargetSlot = -1;
               private static long nextSortActionTime = 0;
 
+              private static boolean triggerbotToggled = false;
+              private static boolean canTrigger = true;
+              private static int triggerState = 0;
+              private static long triggerTimer = 0;
+
+              private static boolean aimAssistActive = false;
+              private static float oldYaw = 0, oldPitch = 0;
+
               @Override
               public void onInitializeClient() {
                   ModConfig.load();
-
-                  AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
-                      ModConfig cfg = ModConfig.INSTANCE;
-                      if (!cfg.sprintEnabled || !world.isClientSide || player != Minecraft.getInstance().player) return InteractionResult.PASS;
-
-                      boolean critState = player.fallDistance > 0.0F && !player.onGround() && !player.onClimbable() && !player.isInWater();
-                      if (!cfg.critOnly || critState) {
-                          if (player.isSprinting() || cfg.autoSprint) {
-                              resetStart = System.currentTimeMillis() + cfg.startDelayMs;
-                              resetEnd = resetStart + cfg.holdDurationMs;
-                              resetting = true;
-                          }
-                      }
-                      return InteractionResult.PASS;
-                  });
 
                   ClientTickEvents.END_CLIENT_TICK.register(client -> {
                       if (client.player == null || client.getWindow() == null) return;
                       long win = client.getWindow().getWindow();
                       ModConfig cfg = ModConfig.INSTANCE;
 
+                      // Меню
                       boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
                           if (client.screen instanceof ModConfigScreen) client.setScreen(null);
@@ -166,6 +176,124 @@ jobs:
                       }
                       rCtrlWasDown = rCtrl;
 
+                      // Toggle Triggerbot
+                      if (InputConstants.isKeyDown(win, cfg.triggerbotKey) && client.screen == null) {
+                          if (!rCtrlWasDown) { 
+                              triggerbotToggled = !triggerbotToggled;
+                              client.player.displayClientMessage(Component.literal("Triggerbot: " + (triggerbotToggled ? "§aON" : "§cOFF")), true);
+                              rCtrlWasDown = true; 
+                          }
+                      } else if (!InputConstants.isKeyDown(win, cfg.triggerbotKey)) {
+                          rCtrlWasDown = false;
+                      }
+
+                      // --- AIM ASSIST & FREELOOK ---
+                      boolean aimKeyDown = InputConstants.isKeyDown(win, cfg.aimKey);
+                      Entity target = client.crosshairPickEntity;
+
+                      if (cfg.aimAssistEnabled && client.screen == null && target instanceof LivingEntity livingTarget) {
+                          if (aimKeyDown) {
+                              if (!aimAssistActive) {
+                                  aimAssistActive = true;
+                                  oldYaw = client.player.getYRot();
+                                  oldPitch = client.player.getXRot();
+                              }
+
+                              // Проверка FOV (чтобы не наводиться на тех, кто за спиной)
+                              Vec3 lookVec = client.player.getLookAngle();
+                              Vec3 targetVec = livingTarget.getEyePosition().subtract(client.player.getEyePosition()).normalize();
+                              double dot = lookVec.dot(targetVec);
+                              double angle = Math.toDegrees(Math.acos(dot));
+
+                              if (angle <= cfg.triggerFov) {
+                                  Vec3 targetPos = livingTarget.getEyePosition();
+                                  if (cfg.aimRandomPoint) {
+                                      // Рандомная точка по высоте тела (от колен до головы)
+                                      double randomY = livingTarget.getY() + (livingTarget.getBbHeight() * (0.3 + Math.random() * 0.6));
+                                      targetPos = new Vec3(livingTarget.getX(), randomY, livingTarget.getZ());
+                                  }
+
+                                  double dx = targetPos.x - client.player.getEyePosition().x;
+                                  double dy = targetPos.y - client.player.getEyePosition().y;
+                                  double dz = targetPos.z - client.player.getEyePosition().z;
+                                  double distXZ = Math.sqrt(dx * dx + dz * dz);
+
+                                  float targetYaw = (float)(Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F;
+                                  float targetPitch = (float)(-(Math.atan2(dy, distXZ) * 180.0 / Math.PI));
+
+                                  // Legit vs Rage (0% = медленно, 100% = мгновенно)
+                                  float legitMod = cfg.aimMode / 100.0f;
+                                  
+                                  // Smoothness влияет на скорость поворота
+                                  float yawStep = (targetYaw - client.player.getYRot()) / Math.max(1.0f, (10.0f - cfg.aimSmoothness * 9.0f));
+                                  float pitchStep = (targetPitch - client.player.getXRot()) / Math.max(1.0f, (10.0f - cfg.aimSmoothness * 9.0f));
+
+                                  // Jitter (дрожание)
+                                  float jitterY = (float) ((Math.random() - 0.5) * cfg.aimJitter);
+                                  float jitterX = (float) ((Math.random() - 0.5) * cfg.aimJitter);
+
+                                  // Применяем скорость
+                                  float finalYaw = client.player.getYRot() + (yawStep * cfg.aimSpeed * legitMod) + jitterY;
+                                  float finalPitch = client.player.getXRot() + (pitchStep * cfg.aimSpeed * legitMod) + jitterX;
+
+                                  client.player.setYRot(finalYaw);
+                                  client.player.setXRot(Mth.clamp(finalPitch, -90.0f, 90.0f));
+                              }
+                          } else if (aimAssistActive) {
+                              // Если Freelook включен, возвращаем камеру обратно
+                              if (cfg.freelookEnabled) {
+                                  client.player.setYRot(oldYaw);
+                                  client.player.setXRot(oldPitch);
+                              }
+                              aimAssistActive = false;
+                          }
+                      }
+
+                      // --- TRIGGERBOT LOGIC ---
+                      if (cfg.triggerbotEnabled && triggerbotToggled && client.screen == null) {
+                          if (client.player.onGround()) {
+                              canTrigger = true;
+                          }
+
+                          if (canTrigger && client.player.fallDistance > 0.0F && target != null) {
+                              float dist = client.player.distanceTo(target);
+                              
+                              // Проверка дистанции
+                              if (dist >= cfg.triggerMinDist && dist <= cfg.triggerMaxDist) {
+                                  // Проверка FOV
+                                  Vec3 lookVec = client.player.getLookAngle();
+                                  Vec3 targetVec = target.getEyePosition().subtract(client.player.getEyePosition()).normalize();
+                                  double angle = Math.toDegrees(Math.acos(lookVec.dot(targetVec)));
+
+                                  if (angle <= cfg.triggerFov) {
+                                      if (triggerState == 0) {
+                                          // Сброс спринта
+                                          if (cfg.sprintMode.equals("W_TAP")) client.options.keyUp.setDown(false);
+                                          else if (cfg.sprintMode.equals("S_TAP")) { client.options.keyUp.setDown(false); client.options.keyDown.setDown(true); }
+                                          else if (cfg.sprintMode.equals("SPRINT")) client.options.keySprint.setDown(false);
+                                          
+                                          triggerState = 1;
+                                          triggerTimer = System.currentTimeMillis() + cfg.triggerDelayMs;
+                                      } 
+                                      else if (triggerState == 1 && System.currentTimeMillis() >= triggerTimer) {
+                                          if (client.gameMode != null && target.isAlive()) {
+                                              client.gameMode.attack(client.player, target);
+                                              client.player.swing(InteractionHand.MAIN_HAND);
+                                              client.player.resetAttackStrengthTicker();
+                                          }
+                                          restoreKeys(client);
+                                          canTrigger = false;
+                                          triggerState = 0;
+                                      }
+                                  }
+                              }
+                          } else if (triggerState == 1) {
+                              restoreKeys(client);
+                              triggerState = 0;
+                          }
+                      }
+
+                      // --- AUTO SPRINT LOGIC ---
                       long now = System.currentTimeMillis();
                       boolean activeReset = false;
                       if (cfg.sprintEnabled && resetting) {
@@ -180,7 +308,7 @@ jobs:
                           }
                       }
 
-                      if (cfg.autoSprint && client.screen == null && !activeReset) {
+                      if (cfg.autoSprint && client.screen == null && !activeReset && triggerState == 0) {
                           if (client.options.keyUp.isDown() && !client.player.isShiftKeyDown()) {
                               client.options.keySprint.setDown(true);
                           } else {
@@ -188,6 +316,7 @@ jobs:
                           }
                       }
 
+                      // --- UTILS ---
                       if (InputConstants.isKeyDown(win, cfg.saveLayoutKey) && client.screen == null) {
                           cfg.savedLayout.clear();
                           for (int i = 0; i < 36; i++) {
@@ -206,7 +335,7 @@ jobs:
                           tickSort(client, cfg);
                       }
 
-                      if (InputConstants.isKeyDown(win, cfg.copyChestKey) && client.screen instanceof AbstractContainerScreen<?> hs) {
+                      if (InputConstants.isKeyDown(win, cfg.copyChestKey) && client.screen instanceof AbstractContainerScreen<?> hs && !triggerbotToggled) {
                           copyChestInfo(client, hs);
                       }
                   });
@@ -216,7 +345,6 @@ jobs:
 
               private static void restoreKeys(Minecraft client) {
                   long win = client.getWindow().getWindow();
-                  
                   InputConstants.Key upKey = InputConstants.getKey(client.options.keyUp.saveString());
                   client.options.keyUp.setDown(InputConstants.isKeyDown(win, upKey.getValue()));
 
@@ -342,6 +470,12 @@ jobs:
                           });
                       }
 
+                      ItemLore lore = stack.get(DataComponents.LORE);
+                      if (lore != null && !lore.lines().isEmpty()) {
+                          sb.append(" | Lore: ");
+                          lore.lines().forEach(line -> sb.append(line.getString()).append(" "));
+                      }
+
                       if (stack.has(DataComponents.CUSTOM_DATA)) {
                           sb.append(" | NBT: ").append(stack.get(DataComponents.CUSTOM_DATA).copyTag().toString());
                       }
@@ -375,31 +509,33 @@ jobs:
               protected void init() {
                   this.clearWidgets();
                   ModConfig cfg = ModConfig.INSTANCE;
-                  int x = this.width / 2 - 120, y = this.height / 2 - 100;
+                  int x = this.width / 2 - 140, y = this.height / 2 - 120;
 
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 0 ? "§b[ Sprint ]" : "Sprint"), b -> { tab = 0; init(); }).bounds(x + 10, y + 25, 70, 20).build());
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 1 ? "§b[ Crit ]" : "Crit"), b -> { tab = 1; init(); }).bounds(x + 85, y + 25, 70, 20).build());
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 2 ? "§b[ Utils ]" : "Utils"), b -> { tab = 2; init(); }).bounds(x + 160, y + 25, 70, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 0 ? "§b[Spr]" : "Spr"), b -> { tab = 0; init(); }).bounds(x + 5, y + 25, 50, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 1 ? "§b[Crit]" : "Crit"), b -> { tab = 1; init(); }).bounds(x + 58, y + 25, 50, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 2 ? "§b[Trig]" : "Trig"), b -> { tab = 2; init(); }).bounds(x + 111, y + 25, 50, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 3 ? "§b[Aim]" : "Aim"), b -> { tab = 3; init(); }).bounds(x + 164, y + 25, 50, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 4 ? "§b[Util]" : "Util"), b -> { tab = 4; init(); }).bounds(x + 217, y + 25, 50, 20).build());
 
                   if (tab == 0) {
-                      this.addRenderableWidget(Button.builder(Component.literal("Sprint: " + (cfg.sprintEnabled ? "§aON" : "§cOFF")), b -> { cfg.sprintEnabled = !cfg.sprintEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 220, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("AutoSprint: " + (cfg.autoSprint ? "§aON" : "§cOFF")), b -> { cfg.autoSprint = !cfg.autoSprint; ModConfig.save(); init(); }).bounds(x + 10, y + 80, 220, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Crit Only: " + (cfg.critOnly ? "§aON" : "§cOFF")), b -> { cfg.critOnly = !cfg.critOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 220, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Sprint: " + (cfg.sprintEnabled ? "§aON" : "§cOFF")), b -> { cfg.sprintEnabled = !cfg.sprintEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("AutoSprint: " + (cfg.autoSprint ? "§aON" : "§cOFF")), b -> { cfg.autoSprint = !cfg.autoSprint; ModConfig.save(); init(); }).bounds(x + 10, y + 80, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Crit Only: " + (cfg.critOnly ? "§aON" : "§cOFF")), b -> { cfg.critOnly = !cfg.critOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 260, 20).build());
                       this.addRenderableWidget(Button.builder(Component.literal("Mode: §e" + cfg.sprintMode), b -> { 
                           if (cfg.sprintMode.equals("W_TAP")) cfg.sprintMode = "S_TAP";
                           else if (cfg.sprintMode.equals("S_TAP")) cfg.sprintMode = "SPRINT";
                           else cfg.sprintMode = "W_TAP";
                           ModConfig.save(); init();
-                      }).bounds(x + 10, y + 130, 220, 20).build());
+                      }).bounds(x + 10, y + 130, 260, 20).build());
                   } else if (tab == 1) {
-                      this.addRenderableWidget(Button.builder(Component.literal("Crit Square: " + (cfg.critEnabled ? "§aON" : "§cOFF")), b -> { cfg.critEnabled = !cfg.critEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 220, 20).build());
-                      EditBox pinkBox = new EditBox(this.font, x + 100, y + 85, 130, 18, Component.literal("Pink"));
+                      this.addRenderableWidget(Button.builder(Component.literal("Crit Square: " + (cfg.critEnabled ? "§aON" : "§cOFF")), b -> { cfg.critEnabled = !cfg.critEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
+                      EditBox pinkBox = new EditBox(this.font, x + 100, y + 85, 170, 18, Component.literal("Pink"));
                       pinkBox.setValue(cfg.pinkColor);
                       this.addRenderableWidget(pinkBox);
-                      EditBox redBox = new EditBox(this.font, x + 100, y + 110, 130, 18, Component.literal("Red"));
+                      EditBox redBox = new EditBox(this.font, x + 100, y + 110, 170, 18, Component.literal("Red"));
                       redBox.setValue(cfg.redColor);
                       this.addRenderableWidget(redBox);
-                      EditBox sizeBox = new EditBox(this.font, x + 100, y + 135, 130, 18, Component.literal("Size"));
+                      EditBox sizeBox = new EditBox(this.font, x + 100, y + 135, 170, 18, Component.literal("Size"));
                       sizeBox.setValue(String.valueOf(cfg.critSize));
                       this.addRenderableWidget(sizeBox);
                       this.addRenderableWidget(Button.builder(Component.literal("§aSave Colors"), b -> {
@@ -407,12 +543,24 @@ jobs:
                           cfg.redColor = redBox.getValue();
                           try { cfg.critSize = Integer.parseInt(sizeBox.getValue()); } catch (Exception ignored) {}
                           ModConfig.save(); init();
-                      }).bounds(x + 10, y + 160, 220, 20).build());
+                      }).bounds(x + 10, y + 160, 260, 20).build());
+                  } else if (tab == 2) {
+                      this.addRenderableWidget(Button.builder(Component.literal("Triggerbot: " + (cfg.triggerbotEnabled ? "§aON" : "§cOFF")), b -> { cfg.triggerbotEnabled = !cfg.triggerbotEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 80, 260, 20, "Delay (ms)", cfg.triggerDelayMs, 0, 200, val -> { cfg.triggerDelayMs = (int)val; ModConfig.save(); }));
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 105, 260, 20, "FOV (Angle)", (long)cfg.triggerFov, 10, 180, val -> { cfg.triggerFov = (float)val; ModConfig.save(); }));
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 260, 20, "Min Dist", (long)(cfg.triggerMinDist*10), 10, 60, val -> { cfg.triggerMinDist = val / 10f; ModConfig.save(); }));
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 155, 260, 20, "Max Dist", (long)(cfg.triggerMaxDist*10), 10, 60, val -> { cfg.triggerMaxDist = val / 10f; ModConfig.save(); }));
+                  } else if (tab == 3) {
+                      this.addRenderableWidget(Button.builder(Component.literal("Aim Assist: " + (cfg.aimAssistEnabled ? "§aON" : "§cOFF")), b -> { cfg.aimAssistEnabled = !cfg.aimAssistEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Freelook (Hold): " + (cfg.freelookEnabled ? "§aON" : "§cOFF")), b -> { cfg.freelookEnabled = !cfg.freelookEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 80, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Random Point: " + (cfg.aimRandomPoint ? "§aON" : "§cOFF")), b -> { cfg.aimRandomPoint = !cfg.aimRandomPoint; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 260, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 260, 20, "Legit(0)-Rage(100)", cfg.aimMode, 0, 100, val -> { cfg.aimMode = (int)val; ModConfig.save(); }));
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 155, 260, 20, "Speed", (long)(cfg.aimSpeed*10), 1, 50, val -> { cfg.aimSpeed = val / 10f; ModConfig.save(); }));
                   } else {
-                      this.addRenderableWidget(Button.builder(Component.literal("Save Bind: §e" + (char)cfg.saveLayoutKey), b -> {}).bounds(x + 10, y + 55, 220, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Sort Bind: §e" + (char)cfg.sortInventoryKey), b -> {}).bounds(x + 10, y + 80, 220, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Copy Chest Bind: §e" + (char)cfg.copyChestKey), b -> {}).bounds(x + 10, y + 105, 220, 20).build());
-                      this.addRenderableWidget(new SpeedSlider(x + 10, y + 130, 220, 20, cfg.sortSpeedMs, val -> { cfg.sortSpeedMs = val; ModConfig.save(); }));
+                      this.addRenderableWidget(Button.builder(Component.literal("Save Bind: §e" + (char)cfg.saveLayoutKey), b -> {}).bounds(x + 10, y + 55, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Sort Bind: §e" + (char)cfg.sortInventoryKey), b -> {}).bounds(x + 10, y + 80, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Copy Chest Bind: §e" + (char)cfg.copyChestKey), b -> {}).bounds(x + 10, y + 105, 260, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 260, 20, "Sort Speed", cfg.sortSpeedMs, 30, 300, val -> { cfg.sortSpeedMs = val; ModConfig.save(); }));
                   }
               }
 
@@ -420,18 +568,20 @@ jobs:
               public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
                   this.renderBackground(context, mouseX, mouseY, delta);
                   ModConfig cfg = ModConfig.INSTANCE;
-                  int x = this.width / 2 - 120, y = this.height / 2 - 100;
-                  context.fill(x - 1, y - 1, x + 241, y + 201, 0xFF00E5FF);
-                  context.fill(x, y, x + 240, y + 200, 0xE612151E);
-                  context.drawCenteredString(this.font, "§b§lCombat Utils", x + 120, y + 10, 0xFFFFFF);
+                  int x = this.width / 2 - 140, y = this.height / 2 - 120;
+                  context.fill(x - 1, y - 1, x + 271, y + 221, 0xFF00E5FF);
+                  context.fill(x, y, x + 270, y + 220, 0xE612151E);
+                  context.drawCenteredString(this.font, "§b§lCombat Utils", x + 135, y + 10, 0xFFFFFF);
+                  
                   if (tab == 1) {
                       context.drawString(this.font, "Pink:", x + 10, y + 90, 0xFF69B4, false);
                       context.drawString(this.font, "Red:", x + 10, y + 115, 0xFF0000, false);
                       context.drawString(this.font, "Size:", x + 10, y + 140, 0xFFFFFF, false);
                       context.fill(cfg.critX, cfg.critY, cfg.critX + cfg.critSize, cfg.critY + cfg.critSize, ModConfig.parseHexColor(cfg.whiteColor));
                       context.renderOutline(cfg.critX - 1, cfg.critY - 1, cfg.critSize + 2, cfg.critSize + 2, 0xFFFFFFFF);
-                  } else if (tab == 2) {
-                      context.drawString(this.font, "Sort Speed:", x + 10, y + 135, 0xFFFFFF, false);
+                  } else if (tab == 3) {
+                      context.drawString(this.font, "Aim Speed:", x + 10, y + 160, 0xFFFFFF, false);
+                      context.drawString(this.font, "Mod:", x + 10, y + 135, 0xFFFFFF, false);
                   }
                   super.render(context, mouseX, mouseY, delta);
               }
@@ -467,21 +617,27 @@ jobs:
               @Override
               public boolean isPauseScreen() { return false; }
 
-              private static class SpeedSlider extends AbstractSliderButton {
+              private static class SliderWidget extends AbstractSliderButton {
                   private final java.util.function.LongConsumer onChange;
-                  public SpeedSlider(int x, int y, int w, int h, long current, java.util.function.LongConsumer onChange) {
-                      super(x, y, w, h, Component.empty(), (double) (current - 30) / (300 - 30));
+                  private final String prefix;
+                  private final long min, max;
+
+                  public SliderWidget(int x, int y, int w, int h, String prefix, long current, long min, long max, java.util.function.LongConsumer onChange) {
+                      super(x, y, w, h, Component.empty(), (double) (current - min) / (max - min));
                       this.onChange = onChange;
+                      this.prefix = prefix;
+                      this.min = min;
+                      this.max = max;
                       updateMessage();
                   }
                   @Override
                   protected void updateMessage() {
-                      long val = Math.round(30 + (300 - 30) * this.value);
-                      this.setMessage(Component.literal("Sort Speed: §e" + val + " мс"));
+                      long val = Math.round(min + (max - min) * this.value);
+                      this.setMessage(Component.literal(prefix + ": §e" + val));
                   }
                   @Override
                   protected void applyValue() {
-                      onChange.accept(Math.round(30 + (300 - 30) * this.value));
+                      onChange.accept(Math.round(min + (max - min) * this.value));
                   }
               }
           }
