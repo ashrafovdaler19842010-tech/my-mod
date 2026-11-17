@@ -11,7 +11,27 @@ jobs:
       - name: Build Mod Sources
         run: |
           sed -i 's/"fabricloader": "[^"]*"/"fabricloader": ">=0.16.0"/g' src/main/resources/fabric.mod.json
-          sed -i 's/"ExampleClientMixin"//g' src/client/resources/template-mod.client.mixins.json
+          
+          # Меняем точку входа в fabric.mod.json на наш новый класс
+          sed -i 's/com.example.client.TemplateModClient/com.example.client.CombatUtilsClient/g' src/main/resources/fabric.mod.json
+          
+          # Исправляем JSON миксинов
+          cat << 'EOF' > src/client/resources/template-mod.client.mixins.json
+          {
+            "required": true,
+            "minVersion": "0.8",
+            "package": "com.example.client.mixin",
+            "compatibilityLevel": "JAVA_21",
+            "client": [],
+            "injectors": {
+              "defaultRequire": 1
+            }
+          }
+          EOF
+
+          # Компилируем под Java 21, так как игра работает на 21
+          echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
+
           rm -rf src/client/java/com/example/client/*
           mkdir -p src/client/java/com/example/client
           
