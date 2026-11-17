@@ -41,12 +41,19 @@ jobs:
           import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
           import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
           import net.minecraft.sounds.SoundEvents;
+          import net.minecraft.tags.ItemTags;
           import net.minecraft.util.Mth;
           import net.minecraft.world.InteractionHand;
           import net.minecraft.world.entity.Entity;
           import net.minecraft.world.entity.LivingEntity;
+          import net.minecraft.world.item.ItemStack;
+          import net.minecraft.world.phys.AABB;
           import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
+
+          import java.util.ArrayList;
+          import java.util.Comparator;
+          import java.util.List;
 
           public class AuraModClient implements ClientModInitializer {
 
@@ -61,42 +68,46 @@ jobs:
                       if (client.player == null || client.getWindow() == null) return;
                       long win = client.getWindow().getWindow();
 
-                      // Обработка нажатия X (код 88)
+                      // Бинд X (Вкл/Выкл + Звук)
                       boolean xDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_X);
                       if (xDown && !xKeyWasDown) {
                           auraEnabled = !auraEnabled;
-                          // Звук вкл/выкл
                           client.player.playSound(auraEnabled ? SoundEvents.EXPERIENCE_ORB_PICKUP : SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
                       }
                       xKeyWasDown = xDown;
 
-                      // Если килка выключена или открыт инвентарь - ничего не делаем
+                      // Проверки (Экран, Кулдаун, Задержка CPS)
                       if (!auraEnabled || client.screen != null) return;
-
-                      // Проверка кулдауна атаки (чтобы не спамить)
                       if (client.player.getAttackStrengthScale(0.5f) < 1.0f) return;
                       if (System.currentTimeMillis() - lastAttackTime < attackDelay) return;
 
-                      // Ищем цель
+                      // Ищем цель в радиусе
                       LivingEntity target = getClosestEntity(client, 3.5f);
                       if (target == null) return;
 
-                      // 1. СБРОС СПРИНТА (Обход Grim/Matrix для крита)
+                      // Проверка на меч
+                      ItemStack held = client.player.getMainHandItem();
+                      if (!held.is(ItemTags.SWORDS)) return;
+
+                      // Проверка на крит (в падении)
+                      boolean isCrit = client.player.fallDistance > 0.0F && !client.player.onGround();
+                      if (!isCrit) return;
+
+                      // 1. СБРОС СПРИНТА (Обход для крита)
                       if (client.player.isSprinting()) {
                           client.player.connection.send(new ServerboundPlayerCommandPacket(client.player, ServerboundPlayerCommandPacket.Action.STOP_SPRINTING));
                       }
 
-                      // 2. МАТЕМАТИКА ПОВОРОТА (Обход Polar GCD)
-                      float[] rots = getRotations(client.player, target);
-                      float targetYaw = rots[0];
-                      float targetPitch = rots[1];
+                      // 2. ВЫЧИСЛЯЕМ УЛЬТРА-ПИКСЕЛЬ (Ближайшая точка на хитбоксе)
+                      Vec3 idealPoint = getUltraPixel(client.player, target);
+                      float[] rots = getRotations(client.player.getEyePosition(), idealPoint);
                       
-                      // Сохраняем текущие углы (Freelook)
+                      // Сохраняем твои углы (Freelook)
                       float oldYaw = client.player.getYRot();
                       float oldPitch = client.player.getXRot();
 
-                      // 3. ОТПРАВЛЯЕМ ПАКЕТ ПОВОРОТА (Тихая наводка)
-                      client.player.connection.send(new ServerboundMovePlayerPacket.Rot(targetYaw, targetPitch, client.player.onGround(), false));
+                      // 3. ОТПРАВЛЯЕМ ПАКЕТ (Сервер видит, что ты смотришь на цель)
+                      client.player.connection.send(new ServerboundMovePlayerPacket.Rot(rots[0], rots[1], client.player.onGround(), false));
 
                       // 4. БЬЕМ
                       if (client.gameMode != null) {
@@ -104,46 +115,58 @@ jobs:
                           client.player.swing(InteractionHand.MAIN_HAND);
                       }
 
-                      // 5. ВОЗВРАЩАЕМ ПАКЕТ ОБРАТНО (Чтобы сервер не спалил)
+                      // 5. ВОЗВРАЩАЕМ ПАКЕТ (Камера для тебя не двигается)
                       client.player.connection.send(new ServerboundMovePlayerPacket.Rot(oldYaw, oldPitch, client.player.onGround(), false));
 
-                      // Рандомизация CPS (от 100 до 250 мс)
+                      // Рандомизация CPS (100-250 мс)
                       lastAttackTime = System.currentTimeMillis();
                       attackDelay = 100 + (int)(Math.random() * 150);
                   });
               }
 
-              // Поиск ближайшей цели
+              // ЛОГИКА УЛЬТРА-ПИКСЕЛЯ ИЗ CELESTIAL
+              private static Vec3 getUltraPixel(LivingEntity player, Entity target) {
+                  AABB box = target.getBoundingBox();
+                  List<Vec3> points = new ArrayList<>();
+                  
+                  // Добавляем 8 углов хитбокса и центр
+                  points.add(new Vec3(box.minX, box.minY, box.minZ));
+                  points.add(new Vec3(box.maxX, box.minY, box.minZ));
+                  points.add(new Vec3(box.minX, box.maxY, box.minZ));
+                  points.add(new Vec3(box.maxX, box.maxY, box.minZ));
+                  points.add(new Vec3(box.minX, box.minY, box.maxZ));
+                  points.add(new Vec3(box.maxX, box.minY, box.maxZ));
+                  points.add(new Vec3(box.minX, box.maxY, box.maxZ));
+                  points.add(new Vec3(box.maxX, box.maxY, box.maxZ));
+                  points.add(box.getCenter());
+
+                  // Ищем ближайшую точку к нашим глазам
+                  Vec3 eyePos = player.getEyePosition();
+                  return points.stream().min(Comparator.comparingDouble(p -> p.distanceTo(eyePos))).orElse(box.getCenter());
+              }
+
               private static LivingEntity getClosestEntity(Minecraft mc, float range) {
-                  LivingEntity best = null;
-                  double bestDist = range;
+                  LivingEntity best = null; double bestDist = range;
                   for (Entity e : mc.level.entitiesForRendering()) {
                       if (e == mc.player || !(e instanceof LivingEntity) || !e.isAlive()) continue;
                       double dist = mc.player.distanceTo(e);
-                      if (dist <= bestDist) {
-                          bestDist = dist;
-                          best = (LivingEntity) e;
-                      }
+                      if (dist <= bestDist) { bestDist = dist; best = (LivingEntity) e; }
                   }
                   return best;
               }
 
-              // Вычисление углов + обход античитов (Jitter + GCD)
-              private static float[] getRotations(LivingEntity player, LivingEntity target) {
-                  Vec3 eye = player.getEyePosition();
-                  Vec3 pos = target.position().add(0, target.getBbHeight() * 0.5, 0); // Бьем в тело
-
-                  double dx = pos.x - eye.x;
-                  double dy = pos.y - eye.y;
-                  double dz = pos.z - eye.z;
+              private static float[] getRotations(Vec3 eye, Vec3 target) {
+                  double dx = target.x - eye.x;
+                  double dy = target.y - eye.y;
+                  double dz = target.z - eye.z;
                   double dist = Math.sqrt(dx * dx + dz * dz);
 
                   float yaw = (float)(Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F;
                   float pitch = (float)(-(Math.atan2(dy, dist) * 180.0 / Math.PI));
 
-                  // МИКРО-ШУМ (Обход Polar/Grim на идеальные углы)
-                  yaw += (Math.random() - 0.5) * 0.4f;
-                  pitch += (Math.random() - 0.5) * 0.4f;
+                  // Микро-рандом для обхода Polar AC (GCD)
+                  yaw += (Math.random() - 0.5) * 0.3f;
+                  pitch += (Math.random() - 0.5) * 0.3f;
 
                   return new float[]{yaw, Mth.clamp(pitch, -90.0f, 90.0f)};
               }
