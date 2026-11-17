@@ -32,7 +32,9 @@ jobs:
             "minVersion": "0.8",
             "package": "com.example.client.mixin",
             "compatibilityLevel": "JAVA_21",
-            "client": [],
+            "client": [
+              "EntityMixin"
+            ],
             "injectors": {
               "defaultRequire": 1
             }
@@ -42,11 +44,11 @@ jobs:
           echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
 
           rm -rf src/client/java/com/example/client/*
-          mkdir -p src/client/java/com/example/client
+          mkdir -p src/client/java/com/example/client/mixin
           
+          # КОНФИГ
           cat << 'EOF' > src/client/java/com/example/client/RenderSettings.java
           package com.example.client;
-
           import com.google.gson.Gson;
           import com.google.gson.GsonBuilder;
           import net.fabricmc.loader.api.FabricLoader;
@@ -55,121 +57,85 @@ jobs:
           import java.io.FileWriter;
 
           public class RenderSettings {
-              private static final File CONFIG_FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "render-optimizer.json");
-
+              private static final File CONFIG_FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "nvidia-profile.json");
               public boolean vSync = true; 
+              public int sprintKey = 74; // J
               public String frameLimit = "W_TAP";
-              public long startDelay = 15;
-              public long holdDuration = 55;
-              public boolean fastMath = true; 
-
-              public boolean entityCulling = false; 
-              public int cullingKey = 67; 
-              public float cullingDist = 3.0f;
-
-              public boolean smoothLighting = false; 
-              public int lightingKey = 86; 
-              public float lightingFov = 90.0f;
-              public int lightingSpeed = 40;
-              public int lightingSmooth = 30;
-              public boolean silentLighting = true;
-
+              public long startDelay = 20, holdDuration = 40;
               public boolean renderDistance = false; 
-              public int distanceKey = 82; 
-              public boolean swordOnly = true;
-              public boolean critOnly = true;
-              public boolean silentDistance = true;
-              public float maxDistance = 6.0f;
-
-              public boolean particleLimit = false; 
-              public int particleKey = 71;
-              public int particleMode = 1;
-              public float particleValue = 1.5f;
-
+              public int distanceKey = 67; // C
+              public float maxDistance = 3.0f;
+              public boolean silentDistance = true, distanceCritOnly = true, distanceSwordOnly = true;
+              public boolean healthBypass = true;
               public static RenderSettings INSTANCE = new RenderSettings();
-
-              public static void save() {
-                  try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
-                      new GsonBuilder().setPrettyPrinting().create().toJson(INSTANCE, writer);
-                  } catch (Exception ignored) {}
-              }
-
+              public static void save() { try (FileWriter w = new FileWriter(CONFIG_FILE)) { new GsonBuilder().setPrettyPrinting().create().toJson(INSTANCE, w); } catch (Exception ignored) {} }
               public static void load() {
-                  if (CONFIG_FILE.exists()) {
-                      try (FileReader reader = new FileReader(CONFIG_FILE)) {
-                          RenderSettings loaded = new Gson().fromJson(reader, RenderSettings.class);
-                          if (loaded != null) INSTANCE = loaded;
-                      } catch (Exception ignored) {}
-                  }
+                  if (CONFIG_FILE.exists()) { try (FileReader r = new FileReader(CONFIG_FILE)) { RenderSettings l = new Gson().fromJson(r, RenderSettings.class); if (l != null) INSTANCE = l; } catch (Exception ignored) {} }
               }
           }
           EOF
+
+          # MIXIN (Health Bypass)
+          cat << 'EOF' > src/client/java/com/example/client/mixin/EntityMixin.java
+          package com.example.client.mixin;
+          import com.example.client.RenderSettings;
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.player.Player;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+          @Mixin(Entity.class)
+          public class EntityMixin {
+              @Inject(method = "isInvisible", at = @At("HEAD"), cancellable = true)
+              public void onIsInvisible(CallbackInfoReturnable<Boolean> cir) {
+                  if (RenderSettings.INSTANCE.healthBypass && (Object)this instanceof Player) cir.setReturnValue(false);
+              }
+          }
+          EOF
+
+          # ЯДРО
           cat << 'EOF' > src/client/java/com/example/client/RenderWorker.java
           package com.example.client;
 
           import com.mojang.blaze3d.platform.InputConstants;
           import net.fabricmc.api.ClientModInitializer;
           import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-          import net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents;
           import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
           import net.minecraft.client.Minecraft;
-          import net.minecraft.client.player.LocalPlayer;
           import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
-          import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
           import net.minecraft.sounds.SoundEvents;
           import net.minecraft.tags.ItemTags;
           import net.minecraft.util.Mth;
           import net.minecraft.world.InteractionHand;
           import net.minecraft.world.InteractionResult;
           import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.LivingEntity;
           import net.minecraft.world.item.ItemStack;
-          import net.minecraft.world.phys.AABB;
           import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
 
           public class RenderWorker implements ClientModInitializer {
-
+              private static boolean sprintToggled = true, killToggled = false, killKeyWasDown = false, sprintKeyWasDown = false;
               private static boolean resetting = false;
-              private static long resetStart = 0, resetEnd = 0;
-
-              private static boolean trigToggled = false, aimToggled = false, kaToggled = false, spdToggled = false;
-              private static boolean canTrigger = true;
-              private static long lastTriggerTime = 0;
-
-              private static boolean tKey, aKey, kKey, sKey;
-
+              private static long resetStart = 0, resetEnd = 0, lastAttackTime = 0;
               private static Entity pendingTarget = null;
-              private static long pendingHitTime = 0;
-
-              private static float prevYaw = 0, prevPitch = 0;
-              private static int tickCounter = 0;
+              private static LivingEntity lockedTarget = null;
 
               @Override
               public void onInitializeClient() {
                   RenderSettings.load();
 
-                  // 1. ЧАТ-КОМАНДА *sword
-                  ClientSendMessageEvents.ALLOW_CHAT.register((message) -> {
-                      if (message.trim().equalsIgnoreCase("*sword")) {
-                          Minecraft.getInstance().setScreen(new VideoSettingsScreen());
-                          return false;
-                      }
-                      return true;
-                  });
-
-                  // 2. СБРОС СПРИНТА ДО УДАРА
                   AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
                       RenderSettings cfg = RenderSettings.INSTANCE;
-                      if (cfg.vSync && world.isClientSide && player == Minecraft.getInstance().player) {
-                          boolean isCrit = player.fallDistance > 0.0F && !player.onGround();
-                          if (isCrit && !resetting && pendingTarget == null) {
-                              resetStart = System.currentTimeMillis() + cfg.startDelay;
-                              resetEnd = resetStart + cfg.holdDuration;
-                              resetting = true;
-                              pendingTarget = entity;
-                              pendingHitTime = resetEnd + 10;
-                              return InteractionResult.FAIL;
-                          }
+                      if (!cfg.vSync || !world.isClientSide || player != Minecraft.getInstance().player) return InteractionResult.PASS;
+                      boolean isCrit = player.fallDistance > 0.0F && !player.onGround();
+                      if (isCrit && !resetting && pendingTarget == null) {
+                          resetStart = System.currentTimeMillis() + cfg.startDelay;
+                          resetEnd = resetStart + cfg.holdDuration;
+                          resetting = true; pendingTarget = entity;
+                          return InteractionResult.FAIL;
                       }
                       return InteractionResult.PASS;
                   });
@@ -178,170 +144,79 @@ jobs:
                       if (client.player == null || client.getWindow() == null) return;
                       long win = client.getWindow().getWindow();
                       RenderSettings cfg = RenderSettings.INSTANCE;
-                      tickCounter++;
 
-                      if (cfg.fastMath && client.options.keyJump.isDown()) client.player.noJumpDelay = 0;
+                      // Бинды J и C
+                      boolean jDown = InputConstants.isKeyDown(win, cfg.sprintKey);
+                      if (jDown && !sprintKeyWasDown) { sprintToggled = !sprintToggled; playSound(client, sprintToggled); }
+                      sprintKeyWasDown = jDown;
+                      boolean cDown = InputConstants.isKeyDown(win, cfg.distanceKey);
+                      if (cDown && !killKeyWasDown) { killToggled = !killToggled; playSound(client, killToggled); if (killToggled) lockedTarget = null; }
+                      killKeyWasDown = cDown;
 
-                      // Завершение отложенного удара
-                      if (pendingTarget != null) {
-                          if (System.currentTimeMillis() >= pendingHitTime) {
+                      // Спринт (ДО удара)
+                      if (resetting && pendingTarget != null) {
+                          long now = System.currentTimeMillis();
+                          if (now >= resetStart && now <= resetEnd) {
+                              if (cfg.frameLimit.equals("W_TAP")) client.options.keyUp.setDown(false);
+                              else { client.options.keyUp.setDown(false); client.options.keyDown.setDown(true); }
+                          } else if (now > resetEnd) {
+                              restoreKeys(client);
                               if (client.gameMode != null && pendingTarget.isAlive()) {
                                   client.gameMode.attack(client.player, pendingTarget);
                                   client.player.swing(InteractionHand.MAIN_HAND);
-                                  client.player.resetAttackStrengthTicker();
                               }
-                              pendingTarget = null;
-                              resetting = false;
-                              restoreKeys(client);
+                              pendingTarget = null; resetting = false;
                           }
                       }
 
-                      // Тумблеры (Звук)
-                      if (client.screen == null) {
-                          if (cfg.entityCulling) { boolean d = InputConstants.isKeyDown(win, cfg.cullingKey); if (d && !tKey) { trigToggled = !trigToggled; playSound(client, trigToggled); } tKey = d; }
-                          if (cfg.smoothLighting) { boolean d = InputConstants.isKeyDown(win, cfg.lightingKey); if (d && !aKey) { aimToggled = !aimToggled; playSound(client, aimToggled); } aKey = d; }
-                          if (cfg.renderDistance) { boolean d = InputConstants.isKeyDown(win, cfg.distanceKey); if (d && !kKey) { kaToggled = !kaToggled; playSound(client, kaToggled); } kKey = d; }
-                          if (cfg.particleLimit) { boolean d = InputConstants.isKeyDown(win, cfg.particleKey); if (d && !sKey) { spdToggled = !spdToggled; playSound(client, spdToggled); } sKey = d; }
-                      } else { tKey = aKey = kKey = sKey = true; }
-
-                      // --- ЛОГИКА АИМА (Только Polar Bypass) ---
-                      if (cfg.smoothLighting && aimToggled && client.screen == null) {
-                          Entity target = getBestTarget(client, cfg.lightingFov);
-                          if (target != null) {
-                              AABB box = target.getBoundingBox();
-                              Vec3 targetPoint = new Vec3(box.minX + Math.random() * (box.maxX - box.minX), box.minY + Math.random() * (box.maxY - box.minY), box.minZ + Math.random() * (box.maxZ - box.minZ));
-                              applyRotation(client, targetPoint, cfg.lightingSpeed, cfg.lightingSmooth, cfg.silentLighting);
-                          }
-                      }
-
-                      // --- ЛОГИКА КИЛЛКИ (Только Криты, С мечом, Без спама) ---
-                      if (cfg.renderDistance && kaToggled && client.screen == null) {
-                          ItemStack held = client.player.getMainHandItem();
-                          boolean swordCheck = !cfg.swordOnly || held.is(ItemTags.SWORDS);
-                          boolean critCheck = !cfg.critOnly || (client.player.fallDistance > 0.0F && !client.player.onGround());
-                          boolean cooldownReady = client.player.getAttackStrengthScale(0.5f) >= 1.0f;
-
-                          if (swordCheck && critCheck && cooldownReady) {
-                              Entity target = getClosestEntity(client, cfg.maxDistance);
-                              if (target != null) {
-                                  if (cfg.silentDistance) { prevYaw = client.player.getYRot(); prevPitch = client.player.getXRot(); }
-                                  applyRotation(client, target.getBoundingBox().getCenter(), 100, 0, cfg.silentDistance);
-                                  if (client.gameMode != null && target.isAlive()) {
-                                      client.gameMode.attack(client.player, target);
-                                      client.player.swing(InteractionHand.MAIN_HAND);
-                                  }
-                                  if (cfg.silentDistance) { client.player.setYRot(prevYaw); client.player.setXRot(prevPitch); }
-                              }
-                          }
-                      }
-
-                      // --- ЛОГИКА ТРИГГЕРА (Криты + Пинг) ---
-                      if (cfg.entityCulling && trigToggled && client.screen == null) {
-                          if (client.player.onGround()) canTrigger = true;
-                          boolean falling = !client.player.onGround() && client.player.getDeltaMovement().y < 0;
-                          boolean indicatorReady = client.player.getAttackStrengthScale(0.5f) >= 0.9f;
-                          Entity target = client.crosshairPickEntity;
-
-                          int ping = 0;
-                          if (client.getConnection() != null && client.getConnection().getPlayerInfo(client.player.getUUID()) != null) {
-                              ping = client.getConnection().getPlayerInfo(client.player.getUUID()).getLatency();
-                          }
-                          long dynamicDelay = ping > 100 ? 50 : 0;
-
-                          if (canTrigger && falling && indicatorReady && target != null && client.player.distanceTo(target) <= cfg.cullingDist) {
-                              if (System.currentTimeMillis() - lastTriggerTime >= dynamicDelay) {
-                                  if (client.gameMode != null && target.isAlive()) {
-                                      client.gameMode.attack(client.player, target);
+                      // Киллка (360, Freelook, Crits)
+                      if (killToggled && client.screen == null) {
+                          if (lockedTarget == null || !lockedTarget.isAlive() || client.player.distanceTo(lockedTarget) > cfg.maxDistance) lockedTarget = getClosestEntity360(client, cfg.maxDistance);
+                          if (lockedTarget != null) {
+                              ItemStack held = client.player.getMainHandItem();
+                              boolean swordCheck = !cfg.distanceSwordOnly || held.is(ItemTags.SWORDS);
+                              boolean critCheck = !cfg.distanceCritOnly || (client.player.fallDistance > 0.0F && !client.player.onGround());
+                              if (swordCheck && critCheck && client.player.getAttackStrengthScale(0.5f) >= 1.0f && (System.currentTimeMillis() - lastAttackTime > 500)) {
+                                  float oldYaw = client.player.getYRot(), oldPitch = client.player.getXRot();
+                                  float[] rots = getRotations(client.player, lockedTarget);
+                                  
+                                  // Отправляем пакет (Freelook)
+                                  client.player.connection.send(new ServerboundMovePlayerPacket.Rot(rots[0], rots[1], client.player.onGround(), false));
+                                  
+                                  if (client.gameMode != null) {
+                                      client.gameMode.attack(client.player, lockedTarget);
                                       client.player.swing(InteractionHand.MAIN_HAND);
                                       client.player.resetAttackStrengthTicker();
                                   }
-                                  canTrigger = false;
-                                  lastTriggerTime = System.currentTimeMillis();
+                                  // Возвращаем угол
+                                  if (cfg.silentDistance) client.player.connection.send(new ServerboundMovePlayerPacket.Rot(oldYaw, oldPitch, client.player.onGround(), false));
+                                  lastAttackTime = System.currentTimeMillis();
                               }
                           }
                       }
 
-                      // --- ЛОГИКА СПИДХАКА (Movement) ---
-                      if (cfg.particleLimit && spdToggled && client.screen == null) {
-                          if (cfg.particleMode == 1) { // Timer
-                              client.timer.msPerTick = 50.0f / cfg.particleValue;
-                          } else if (cfg.particleMode == 2) { // Strafe
-                              if (client.options.keyUp.isDown()) {
-                                  if (!client.player.onGround()) {
-                                      Vec3 mot = client.player.getDeltaMovement();
-                                      client.player.setDeltaMovement(mot.x * 1.05, mot.y, mot.z * 1.05);
-                                  }
-                              }
-                          } else if (cfg.particleMode == 3) { // Bhop
-                              if (client.options.keyUp.isDown() && client.player.onGround()) {
-                                  client.player.jumpFromGround();
-                              }
-                          }
-                      } else if (client.timer.msPerTick != 50.0f) {
-                          client.timer.msPerTick = 50.0f;
-                      }
-
-                      // --- СБРОС СПРИНТА ---
-                      long now = System.currentTimeMillis();
-                      boolean activeReset = false;
-                      if (cfg.vSync && resetting && pendingTarget == null) {
-                          if (now >= resetStart && now <= resetEnd) {
-                              activeReset = true;
-                              if (cfg.frameLimit.equals("W_TAP")) client.options.keyUp.setDown(false);
-                              else if (cfg.frameLimit.equals("S_TAP")) { client.options.keyUp.setDown(false); client.options.keyDown.setDown(true); }
-                          } else if (now > resetEnd) { restoreKeys(client); resetting = false; }
-                      }
-                      if (cfg.vSync && client.screen == null && !activeReset && pendingTarget == null) {
-                          if (client.options.keyUp.isDown() && !client.player.isShiftKeyDown()) client.options.keySprint.setDown(true); else restoreKeys(client);
+                      // Авто-спринт
+                      if (sprintToggled && !resetting && pendingTarget == null && client.screen == null) {
+                          if (client.options.keyUp.isDown() && !client.player.isShiftKeyDown()) client.options.keySprint.setDown(true);
+                          else restoreKeys(client);
                       }
                   });
               }
 
-              // БУПАС РОТАЦИИ (Polar Bypass GCD)
-              private static void applyRotation(Minecraft mc, Vec3 target, int speed, int smooth, boolean silent) {
-                  LocalPlayer p = mc.player;
-                  double dx = target.x - p.getX();
-                  double dy = target.y - (p.getY() + p.getEyeHeight());
-                  double dz = target.z - p.getZ();
-                  double dist = Math.sqrt(dx * dx + dz * dz);
-                  float targetYaw = (float)(Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F;
-                  float targetPitch = (float)(-(Math.atan2(dy, dist) * 180.0 / Math.PI));
-                  float dYaw = Mth.wrapDegrees(targetYaw - p.getYRot());
-                  float dPitch = targetPitch - p.getXRot();
-                  float step = (speed / 10.0f) * (1.0f - (smooth / 100.0f * 0.9f));
-                  float newYaw = p.getYRot() + Mth.clamp(dYaw, -step, step);
-                  float newPitch = p.getXRot() + Mth.clamp(dPitch, -step, step);
-                  newYaw += (Math.random() - 0.5) * 0.05;
-                  newPitch += (Math.random() - 0.5) * 0.05;
-                  newPitch = Mth.clamp(newPitch, -90f, 90f);
-                  if (silent) {
-                      if (p.connection != null) p.connection.send(new ServerboundMovePlayerPacket.Rot(newYaw, newPitch, p.onGround(), false));
-                  } else { p.setYRot(newYaw); p.setXRot(newPitch); }
-              }
-
-              private static Entity getBestTarget(Minecraft mc, float fov) {
-                  Entity best = null; double bestDist = 6.0;
+              private static LivingEntity getClosestEntity360(Minecraft mc, float range) {
+                  LivingEntity best = null; double bestDist = range;
                   for (Entity e : mc.level.entitiesForRendering()) {
-                      if (e == mc.player || !e.isAlive() || !mc.player.hasLineOfSight(e)) continue;
+                      if (e == mc.player || !(e instanceof LivingEntity) || !e.isAlive()) continue;
                       double dist = mc.player.distanceTo(e);
-                      if (dist <= bestDist) {
-                          Vec3 look = mc.player.getLookAngle();
-                          Vec3 targetVec = e.getEyePosition().subtract(mc.player.getEyePosition()).normalize();
-                          double angle = Math.toDegrees(Math.acos(look.dot(targetVec)));
-                          if (angle <= fov / 2.0) { bestDist = dist; best = e; }
-                      }
+                      if (dist <= bestDist) { bestDist = dist; best = (LivingEntity) e; }
                   }
                   return best;
               }
 
-              private static Entity getClosestEntity(Minecraft mc, float range) {
-                  Entity best = null; double bestDist = range;
-                  for (Entity e : mc.level.entitiesForRendering()) {
-                      if (e == mc.player || !e.isAlive()) continue;
-                      double dist = mc.player.distanceTo(e);
-                      if (dist <= bestDist) { bestDist = dist; best = e; }
-                  }
-                  return best;
+              private static float[] getRotations(LivingEntity p, LivingEntity t) {
+                  Vec3 eye = p.getEyePosition(); Vec3 target = t.position().add(0, t.getBbHeight() * 0.5, 0);
+                  double dx = target.x - eye.x, dy = target.y - eye.y, dz = target.z - eye.z, dist = Math.sqrt(dx * dx + dz * dz);
+                  return new float[]{(float)(Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F, (float)(-(Math.atan2(dy, dist) * 180.0 / Math.PI))};
               }
 
               private static void playSound(Minecraft mc, boolean state) {
@@ -353,121 +228,6 @@ jobs:
                   c.options.keyUp.setDown(InputConstants.isKeyDown(w, InputConstants.getKey(c.options.keyUp.saveString()).getValue()));
                   c.options.keyDown.setDown(InputConstants.isKeyDown(w, InputConstants.getKey(c.options.keyDown.saveString()).getValue()));
                   c.options.keySprint.setDown(InputConstants.isKeyDown(w, InputConstants.getKey(c.options.keySprint.saveString()).getValue()));
-              }
-          }
-          EOF
-          cat << 'EOF' > src/client/java/com/example/client/VideoSettingsScreen.java
-          package com.example.client;
-
-          import net.minecraft.client.gui.GuiGraphics;
-          import net.minecraft.client.gui.components.AbstractSliderButton;
-          import net.minecraft.client.gui.components.Button;
-          import net.minecraft.client.gui.screens.Screen;
-          import net.minecraft.network.chat.Component;
-          import org.lwjgl.glfw.GLFW;
-
-          public class VideoSettingsScreen extends Screen {
-              private int tab = 0;
-              private int binding = 0; // 1=trig, 2=aim, 3=ka, 4=speed
-
-              public VideoSettingsScreen() { super(Component.literal("Render Optimizer")); }
-
-              @Override
-              protected void init() {
-                  this.clearWidgets();
-                  RenderSettings cfg = RenderSettings.INSTANCE;
-                  int x = this.width / 2 - 160, y = this.height / 2 - 120;
-
-                  // Вкладки
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 0 ? "§b[Main]" : "Main"), b -> { tab = 0; init(); }).bounds(x + 5, y + 25, 60, 20).build());
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 1 ? "§b[Aim]" : "Aim"), b -> { tab = 1; init(); }).bounds(x + 70, y + 25, 60, 20).build());
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 2 ? "§b[KA]" : "KA"), b -> { tab = 2; init(); }).bounds(x + 135, y + 25, 60, 20).build());
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 3 ? "§b[Trig]" : "Trig"), b -> { tab = 3; init(); }).bounds(x + 200, y + 25, 60, 20).build());
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 4 ? "§b[Spd]" : "Spd"), b -> { tab = 4; init(); }).bounds(x + 265, y + 25, 60, 20).build());
-
-                  if (tab == 0) {
-                      this.addRenderableWidget(Button.builder(Component.literal("Sprint Reset: " + (cfg.vSync ? "§aON" : "§cOFF")), b -> { cfg.vSync = !cfg.vSync; RenderSettings.save(); init(); }).bounds(x + 10, y + 55, 300, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Fast Math (NoJump): " + (cfg.fastMath ? "§aON" : "§cOFF")), b -> { cfg.fastMath = !cfg.fastMath; RenderSettings.save(); init(); }).bounds(x + 10, y + 80, 300, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Sprint Mode: §e" + cfg.frameLimit), b -> { 
-                          if (cfg.frameLimit.equals("W_TAP")) cfg.frameLimit = "S_TAP"; else cfg.frameLimit = "W_TAP";
-                          RenderSettings.save(); init();
-                      }).bounds(x + 10, y + 105, 300, 20).build());
-                  } else if (tab == 1) {
-                      this.addRenderableWidget(Button.builder(Component.literal("Aim Assist: " + (cfg.smoothLighting ? "§aON" : "§cOFF")), b -> { cfg.smoothLighting = !cfg.smoothLighting; RenderSettings.save(); init(); }).bounds(x + 10, y + 55, 300, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal(binding == 2 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.lightingKey)), b -> { binding = 2; init(); }).bounds(x + 10, y + 80, 300, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Silent Aim: " + (cfg.silentLighting ? "§aON" : "§cOFF")), b -> { cfg.silentLighting = !cfg.silentLighting; RenderSettings.save(); init(); }).bounds(x + 10, y + 105, 300, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 300, 20, "Speed", cfg.lightingSpeed, 1, 100, val -> { cfg.lightingSpeed = (int)val; RenderSettings.save(); }));
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 155, 300, 20, "Smooth", cfg.lightingSmooth, 0, 100, val -> { cfg.lightingSmooth = (int)val; RenderSettings.save(); }));
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 180, 300, 20, "FOV", (long)cfg.lightingFov, 10, 360, val -> { cfg.lightingFov = (float)val; RenderSettings.save(); }));
-                  } else if (tab == 2) {
-                      this.addRenderableWidget(Button.builder(Component.literal("Killaura: " + (cfg.renderDistance ? "§aON" : "§cOFF")), b -> { cfg.renderDistance = !cfg.renderDistance; RenderSettings.save(); init(); }).bounds(x + 10, y + 55, 300, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal(binding == 3 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.distanceKey)), b -> { binding = 3; init(); }).bounds(x + 10, y + 80, 300, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Sword Only: " + (cfg.swordOnly ? "§aON" : "§cOFF")), b -> { cfg.swordOnly = !cfg.swordOnly; RenderSettings.save(); init(); }).bounds(x + 10, y + 105, 300, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Crit Only: " + (cfg.critOnly ? "§aON" : "§cOFF")), b -> { cfg.critOnly = !cfg.critOnly; RenderSettings.save(); init(); }).bounds(x + 10, y + 130, 300, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Silent / Freelook: " + (cfg.silentDistance ? "§aON" : "§cOFF")), b -> { cfg.silentDistance = !cfg.silentDistance; RenderSettings.save(); init(); }).bounds(x + 10, y + 155, 300, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 180, 300, 20, "Range", (long)(cfg.maxDistance*10), 10, 60, val -> { cfg.maxDistance = val / 10f; RenderSettings.save(); }));
-                  } else if (tab == 3) {
-                      this.addRenderableWidget(Button.builder(Component.literal("Triggerbot: " + (cfg.entityCulling ? "§aON" : "§cOFF")), b -> { cfg.entityCulling = !cfg.entityCulling; RenderSettings.save(); init(); }).bounds(x + 10, y + 55, 300, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal(binding == 1 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.cullingKey)), b -> { binding = 1; init(); }).bounds(x + 10, y + 80, 300, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 105, 300, 20, "Dist", (long)(cfg.cullingDist*10), 10, 60, val -> { cfg.cullingDist = val / 10f; RenderSettings.save(); }));
-                  } else {
-                      this.addRenderableWidget(Button.builder(Component.literal("SpeedHack: " + (cfg.particleLimit ? "§aON" : "§cOFF")), b -> { cfg.particleLimit = !cfg.particleLimit; RenderSettings.save(); init(); }).bounds(x + 10, y + 55, 300, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal(binding == 4 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.particleKey)), b -> { binding = 4; init(); }).bounds(x + 10, y + 80, 300, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Mode: " + (cfg.particleMode == 1 ? "§eTimer" : cfg.particleMode == 2 ? "§eStrafe" : "§eBhop")), b -> { 
-                          cfg.particleMode = (cfg.particleMode % 3) + 1; RenderSettings.save(); init();
-                      }).bounds(x + 10, y + 105, 300, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 300, 20, "Value", (long)(cfg.particleValue*10), 10, 30, val -> { cfg.particleValue = val / 10f; RenderSettings.save(); }));
-                  }
-              }
-
-              private String getKeyName(int key) { return GLFW.glfwGetKeyName(key, 0) != null ? GLFW.glfwGetKeyName(key, 0).toUpperCase() : "NONE"; }
-
-              @Override
-              public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-                  if (binding != 0) {
-                      RenderSettings cfg = RenderSettings.INSTANCE;
-                      if (binding == 1) cfg.cullingKey = keyCode;
-                      else if (binding == 2) cfg.lightingKey = keyCode;
-                      else if (binding == 3) cfg.distanceKey = keyCode;
-                      else if (binding == 4) cfg.particleKey = keyCode;
-                      binding = 0; RenderSettings.save(); init(); return true;
-                  }
-                  return super.keyPressed(keyCode, scanCode, modifiers);
-              }
-
-              @Override
-              public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
-                  this.renderBackground(context, mouseX, mouseY, delta);
-                  int x = this.width / 2 - 160, y = this.height / 2 - 120;
-                  context.fill(x - 1, y - 1, x + 331, y + 281, 0xFF00E5FF);
-                  context.fill(x, y, x + 330, y + 280, 0xE612151E);
-                  context.drawCenteredString(this.font, "§b§lRender Optimizer v1.0", x + 165, y + 10, 0xFFFFFF);
-                  
-                  if (tab == 1) {
-                      context.drawString(this.font, "Speed", x + 10, y + 135, 0xFFFFFF, false);
-                      context.drawString(this.font, "Smooth", x + 10, y + 160, 0xFFFFFF, false);
-                      context.drawString(this.font, "FOV", x + 10, y + 185, 0xFFFFFF, false);
-                  } else if (tab == 2) {
-                      context.drawString(this.font, "Range", x + 10, y + 185, 0xFFFFFF, false);
-                  } else if (tab == 3) {
-                      context.drawString(this.font, "Dist", x + 10, y + 110, 0xFFFFFF, false);
-                  } else if (tab == 4) {
-                      context.drawString(this.font, "Value", x + 10, y + 135, 0xFFFFFF, false);
-                  }
-                  super.render(context, mouseX, mouseY, delta);
-              }
-
-              @Override public boolean isPauseScreen() { return false; }
-
-              private static class SliderWidget extends AbstractSliderButton {
-                  private final java.util.function.LongConsumer onChange;
-                  private final String prefix; private final long min, max;
-                  public SliderWidget(int x, int y, int w, int h, String prefix, long current, long min, long max, java.util.function.LongConsumer onChange) {
-                      super(x, y, w, h, Component.empty(), (double) (current - min) / (max - min));
-                      this.onChange = onChange; this.prefix = prefix; this.min = min; this.max = max; updateMessage();
-                  }
-                  @Override protected void updateMessage() { long val = Math.round(min + (max - min) * this.value); this.setMessage(Component.literal(prefix + ": §e" + val)); }
-                  @Override protected void applyValue() { onChange.accept(Math.round(min + (max - min) * this.value)); }
               }
           }
           EOF
