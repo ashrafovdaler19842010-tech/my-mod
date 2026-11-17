@@ -59,7 +59,6 @@ jobs:
               public long holdDurationMs = 55;
               public boolean noJumpDelay = true;
 
-              // 10 SPEED MODES
               public boolean speedEnabled = false;
               public int speedKey = 71; // G
               public int speedMode = 1; // 1-10
@@ -82,15 +81,14 @@ jobs:
               public boolean hitboxAim = true;
               public boolean randomAimPoint = true;
 
-              // 10 KILLAURA MODES
               public boolean killauraEnabled = false;
               public int killauraKey = 82; // R
               public int killauraMode = 1; // 1-10
               public boolean swordOnly = true;
               public boolean killauraCritOnly = true;
-              public float killauraRange = 6.0f; // До 6 блоков
+              public float killauraRange = 6.0f;
               public int killauraDelay = 50;
-              public int backtrackDelay = 3; // Задержка для Backtrack (тики)
+              public int backtrackDelay = 3;
 
               public static ModConfig INSTANCE = new ModConfig();
 
@@ -129,7 +127,6 @@ jobs:
           import net.minecraft.world.entity.Entity;
           import net.minecraft.world.entity.LivingEntity;
           import net.minecraft.world.item.ItemStack;
-          import net.minecraft.world.phys.AABB;
           import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
           import java.util.*;
@@ -188,21 +185,19 @@ jobs:
                           if (cfg.speedEnabled) { boolean d = InputConstants.isKeyDown(win, cfg.speedKey); if (d && !sKey) spdToggled = !spdToggled; sKey = d; }
                       } else { tKey = aKey = kKey = sKey = true; }
 
-                      // --- 10 SPEED MODES ---
+                      // --- SPEED HACK MODES ---
                       if (cfg.speedEnabled && spdToggled && client.screen == null) {
-                          if (cfg.speedMode >= 1 && cfg.speedMode <= 10) {
-                              switch (cfg.speedMode) {
-                                  case 1: client.timer.msPerTick = 50.0f / cfg.speedValue; break; // Timer
-                                  case 2: if (client.player.onGround() && client.options.keyUp.isDown()) client.player.jumpFromGround(); break; // LowHop
-                                  case 3: if (!client.player.onGround() && client.options.keyUp.isDown()) { Vec3 m = client.player.getDeltaMovement(); client.player.setDeltaMovement(m.x * cfg.speedValue, m.y, m.z * cfg.speedValue); } break; // Strafe
-                                  case 4: if (client.player.getDeltaMovement().y < 0) client.player.setDeltaMovement(client.player.getDeltaMovement().x, -cfg.speedValue, client.player.getDeltaMovement().z); break; // FastFall
-                                  case 5: if (!client.player.isFallFlying()) client.player.connection.send(new ServerboundPlayerCommandPacket(client.player, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING)); break; // Elytra Spoof
-                                  case 6: if (client.player.onGround() && client.options.keyUp.isDown()) { Vec3 m = client.player.getDeltaMovement(); client.player.setDeltaMovement(m.x * 1.2, m.y, m.z * 1.2); } break; // Ground
-                                  case 7: if (client.player.isUsingItem()) client.player.setDeltaMovement(client.player.getDeltaMovement().multiply(1.3, 1, 1.3)); break; // NoSlow
-                                  case 8: if (client.player.onGround() && client.options.keyUp.isDown()) client.player.jumpFromGround(); break; // Bunny
-                                  case 9: if (client.player.horizontalCollision) client.player.setDeltaMovement(client.player.getDeltaMovement().x, 0.5, client.player.getDeltaMovement().z); break; // Step
-                                  case 10: if (tickCounter % 2 == 0) client.player.connection.send(new ServerboundMovePlayerPacket.Pos(client.player.getX() + cfg.speedValue, client.player.getY(), client.player.getZ(), client.player.onGround(), false)); break; // PacketFlood
-                              }
+                          switch (cfg.speedMode) {
+                              case 1: client.timer.msPerTick = 50.0f / cfg.speedValue; break; // Timer
+                              case 2: if (client.player.onGround() && client.options.keyUp.isDown()) client.player.jumpFromGround(); break; // LowHop
+                              case 3: if (!client.player.onGround() && client.options.keyUp.isDown()) { Vec3 m = client.player.getDeltaMovement(); client.player.setDeltaMovement(m.x * cfg.speedValue, m.y, m.z * cfg.speedValue); } break; // Strafe
+                              case 4: if (client.player.getDeltaMovement().y < 0) client.player.setDeltaMovement(client.player.getDeltaMovement().x, -cfg.speedValue, client.player.getDeltaMovement().z); break; // FastFall
+                              case 5: if (!client.player.isFallFlying()) client.player.connection.send(new ServerboundPlayerCommandPacket(client.player, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING)); break; // Elytra Spoof
+                              case 6: if (client.player.onGround() && client.options.keyUp.isDown()) { Vec3 m = client.player.getDeltaMovement(); client.player.setDeltaMovement(m.x * 1.2, m.y, m.z * 1.2); } break; // Ground
+                              case 7: if (client.player.isUsingItem()) client.player.setDeltaMovement(client.player.getDeltaMovement().multiply(1.3, 1, 1.3)); break; // NoSlow
+                              case 8: if (client.player.onGround() && client.options.keyUp.isDown()) client.player.jumpFromGround(); break; // Bunny
+                              case 9: if (client.player.horizontalCollision) client.player.setDeltaMovement(client.player.getDeltaMovement().x, 0.5, client.player.getDeltaMovement().z); break; // Step
+                              case 10: if (tickCounter % 2 == 0) client.player.connection.send(new ServerboundMovePlayerPacket.Pos(client.player.getX() + cfg.speedValue, client.player.getY(), client.player.getZ(), client.player.onGround(), false)); break; // PacketFlood
                           }
                       } else if (client.timer.msPerTick != 50.0f) client.timer.msPerTick = 50.0f;
 
@@ -226,7 +221,7 @@ jobs:
                           }
                       }
 
-                      // --- 10 KILLAURA MODES ---
+                      // --- KILLAURA MODES ---
                       if (cfg.killauraEnabled && kaToggled && client.screen == null) {
                           if (System.currentTimeMillis() - lastTriggerTime >= cfg.killauraDelay) {
                               ItemStack held = client.player.getMainHandItem();
@@ -246,8 +241,8 @@ jobs:
                                               case 4: Deque<Vec3> h = positionHistory.get(target); if (h != null && !h.isEmpty()) hitVec = h.peekFirst(); silentRot = true; break; // Backtrack
                                               case 5: cfg.killauraRange = 6.0f; silentRot = false; break; // Reach (6 blocks)
                                               case 6: silentRot = false; throughWalls = true; break; // Through Wall (Normal)
-                                              case 7: silentRot = true; hitVec = target.getBoundingBox().getCenter(); break; // Polar Bypass (Center)
-                                              case 8: silentRot = true; hitVec = target.getBoundingBox().getCenter(); hitVec = hitVec.add((Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3); break; // Shard Bypass (Random)
+                                              case 7: silentRot = true; hitVec = target.getBoundingBox().getCenter(); break; // Polar Bypass
+                                              case 8: silentRot = true; hitVec = target.getBoundingBox().getCenter().add((Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3); break; // Shard Bypass
                                               case 9: if (tickCounter % 2 != 0) return; silentRot = true; throughWalls = true; break; // TickSync
                                               case 10: silentRot = true; throughWalls = true; cfg.killauraRange = 6.0f; break; // GodMode
                                           }
@@ -338,6 +333,143 @@ jobs:
                   c.options.keyUp.setDown(InputConstants.isKeyDown(w, InputConstants.getKey(c.options.keyUp.saveString()).getValue()));
                   c.options.keyDown.setDown(InputConstants.isKeyDown(w, InputConstants.getKey(c.options.keyDown.saveString()).getValue()));
                   c.options.keySprint.setDown(InputConstants.isKeyDown(w, InputConstants.getKey(c.options.keySprint.saveString()).getValue()));
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/client/java/com/example/client/ModConfigScreen.java
+          package com.example.client;
+
+          import net.minecraft.client.gui.GuiGraphics;
+          import net.minecraft.client.gui.components.AbstractSliderButton;
+          import net.minecraft.client.gui.components.Button;
+          import net.minecraft.client.gui.screens.Screen;
+          import net.minecraft.network.chat.Component;
+          import org.lwjgl.glfw.GLFW;
+
+          public class ModConfigScreen extends Screen {
+              private int tab = 0;
+              private int binding = 0; // 1=trig, 2=aim, 3=ka, 4=speed
+
+              public ModConfigScreen() { super(Component.literal("Combat Utils")); }
+
+              @Override
+              protected void init() {
+                  this.clearWidgets();
+                  ModConfig cfg = ModConfig.INSTANCE;
+                  int x = this.width / 2 - 160, y = this.height / 2 - 140;
+
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 0 ? "§b[Spr]" : "Spr"), b -> { tab = 0; init(); }).bounds(x + 5, y + 25, 55, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 1 ? "§b[Trig]" : "Trig"), b -> { tab = 1; init(); }).bounds(x + 65, y + 25, 55, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 2 ? "§b[Aim]" : "Aim"), b -> { tab = 2; init(); }).bounds(x + 125, y + 25, 55, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 3 ? "§b[KA]" : "KA"), b -> { tab = 3; init(); }).bounds(x + 185, y + 25, 55, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 4 ? "§b[Spd]" : "Spd"), b -> { tab = 4; init(); }).bounds(x + 245, y + 25, 55, 20).build());
+
+                  if (tab == 0) {
+                      this.addRenderableWidget(Button.builder(Component.literal("Sprint Reset: " + (cfg.sprintEnabled ? "§aON" : "§cOFF")), b -> { cfg.sprintEnabled = !cfg.sprintEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("AutoSprint: " + (cfg.autoSprint ? "§aON" : "§cOFF")), b -> { cfg.autoSprint = !cfg.autoSprint; ModConfig.save(); init(); }).bounds(x + 10, y + 80, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("No Jump Delay: " + (cfg.noJumpDelay ? "§aON" : "§cOFF")), b -> { cfg.noJumpDelay = !cfg.noJumpDelay; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Mode: §e" + cfg.sprintMode), b -> { 
+                          if (cfg.sprintMode.equals("W_TAP")) cfg.sprintMode = "S_TAP";
+                          else if (cfg.sprintMode.equals("S_TAP")) cfg.sprintMode = "SPRINT";
+                          else cfg.sprintMode = "W_TAP";
+                          ModConfig.save(); init();
+                      }).bounds(x + 10, y + 130, 300, 20).build());
+                  } else if (tab == 1) {
+                      this.addRenderableWidget(Button.builder(Component.literal("Triggerbot: " + (cfg.triggerbotEnabled ? "§aON" : "§cOFF")), b -> { cfg.triggerbotEnabled = !cfg.triggerbotEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal(binding == 1 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.triggerbotKey)), b -> { binding = 1; init(); }).bounds(x + 10, y + 80, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Smart Trigger: " + (cfg.smartTrigger ? "§aON" : "§cOFF")), b -> { cfg.smartTrigger = !cfg.smartTrigger; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 300, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 300, 20, "Max Dist", (long)(cfg.triggerMaxDist*10), 10, 60, val -> { cfg.triggerMaxDist = val / 10f; ModConfig.save(); }));
+                  } else if (tab == 2) {
+                      this.addRenderableWidget(Button.builder(Component.literal("Aim Assist: " + (cfg.aimAssistEnabled ? "§aON" : "§cOFF")), b -> { cfg.aimAssistEnabled = !cfg.aimAssistEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 50, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal(binding == 2 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.aimKey)), b -> { binding = 2; init(); }).bounds(x + 10, y + 75, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Mode: " + getAimModeName(cfg.aimMode)), b -> { cfg.aimMode = (cfg.aimMode + 1) % 5; ModConfig.save(); init(); }).bounds(x + 10, y + 100, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Silent Aim: " + (cfg.aimSilent ? "§aON" : "§cOFF")), b -> { cfg.aimSilent = !cfg.aimSilent; ModConfig.save(); init(); }).bounds(x + 10, y + 125, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Wall Check: " + (cfg.aimWallCheck ? "§aON" : "§cOFF")), b -> { cfg.aimWallCheck = !cfg.aimWallCheck; ModConfig.save(); init(); }).bounds(x + 10, y + 150, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Random Point: " + (cfg.randomAimPoint ? "§aON" : "§cOFF")), b -> { cfg.randomAimPoint = !cfg.randomAimPoint; ModConfig.save(); init(); }).bounds(x + 10, y + 175, 300, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 200, 300, 20, "FOV", (long)cfg.aimFov, 10, 360, val -> { cfg.aimFov = (float)val; ModConfig.save(); }));
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 225, 300, 20, "Speed", cfg.aimSpeed, 1, 100, val -> { cfg.aimSpeed = (int)val; ModConfig.save(); }));
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 250, 300, 20, "Smoothness", cfg.aimSmoothness, 0, 100, val -> { cfg.aimSmoothness = (int)val; ModConfig.save(); }));
+                  } else if (tab == 3) {
+                      this.addRenderableWidget(Button.builder(Component.literal("Killaura: " + (cfg.killauraEnabled ? "§aON" : "§cOFF")), b -> { cfg.killauraEnabled = !cfg.killauraEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 50, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal(binding == 3 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.killauraKey)), b -> { binding = 3; init(); }).bounds(x + 10, y + 75, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("KA Mode: " + getKaModeName(cfg.killauraMode)), b -> { cfg.killauraMode = (cfg.killauraMode % 10) + 1; ModConfig.save(); init(); }).bounds(x + 10, y + 100, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Sword Only: " + (cfg.swordOnly ? "§aON" : "§cOFF")), b -> { cfg.swordOnly = !cfg.swordOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 125, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Crit Only: " + (cfg.killauraCritOnly ? "§aON" : "§cOFF")), b -> { cfg.killauraCritOnly = !cfg.killauraCritOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 150, 300, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 175, 300, 20, "Range", (long)(cfg.killauraRange*10), 10, 60, val -> { cfg.killauraRange = val / 10f; ModConfig.save(); }));
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 200, 300, 20, "Backtrack Delay", cfg.backtrackDelay, 1, 10, val -> { cfg.backtrackDelay = (int)val; ModConfig.save(); }));
+                  } else {
+                      this.addRenderableWidget(Button.builder(Component.literal("SpeedHack: " + (cfg.speedEnabled ? "§aON" : "§cOFF")), b -> { cfg.speedEnabled = !cfg.speedEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal(binding == 4 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.speedKey)), b -> { binding = 4; init(); }).bounds(x + 10, y + 80, 300, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Speed Mode: " + getSpeedModeName(cfg.speedMode)), b -> { cfg.speedMode = (cfg.speedMode % 10) + 1; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 300, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 300, 20, "Speed Value", (long)(cfg.speedValue*10), 10, 100, val -> { cfg.speedValue = val / 10f; ModConfig.save(); }));
+                  }
+              }
+
+              private String getAimModeName(int mode) { return switch (mode) { case 0 -> "§cSnap"; case 1 -> "§aSmooth"; case 2 -> "§ePolar"; case 3 -> "§bEaseOut"; default -> "§dSine"; }; }
+              private String getKeyName(int key) { return GLFW.glfwGetKeyName(key, 0) != null ? GLFW.glfwGetKeyName(key, 0).toUpperCase() : "NONE"; }
+              
+              private String getKaModeName(int mode) {
+                  return switch (mode) {
+                      case 1 -> "Normal"; case 2 -> "Silent"; case 3 -> "Through Wall"; case 4 -> "Backtrack";
+                      case 5 -> "Reach 6b"; case 6 -> "Wall (Norm)"; case 7 -> "Polar Byp"; case 8 -> "Shard Byp";
+                      case 9 -> "TickSync"; case 10 -> "GodMode"; default -> "Unknown";
+                  };
+              }
+
+              private String getSpeedModeName(int mode) {
+                  return switch (mode) {
+                      case 1 -> "Timer"; case 2 -> "LowHop"; case 3 -> "Strafe"; case 4 -> "FastFall"; case 5 -> "Elytra";
+                      case 6 -> "Ground"; case 7 -> "NoSlow"; case 8 -> "Bunny"; case 9 -> "Step"; case 10 -> "PacketFlood";
+                      default -> "Unknown";
+                  };
+              }
+
+              @Override
+              public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+                  if (binding != 0) {
+                      ModConfig cfg = ModConfig.INSTANCE;
+                      if (binding == 1) cfg.triggerbotKey = keyCode;
+                      else if (binding == 2) cfg.aimKey = keyCode;
+                      else if (binding == 3) cfg.killauraKey = keyCode;
+                      else if (binding == 4) cfg.speedKey = keyCode;
+                      binding = 0; ModConfig.save(); init(); return true;
+                  }
+                  return super.keyPressed(keyCode, scanCode, modifiers);
+              }
+
+              @Override
+              public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
+                  this.renderBackground(context, mouseX, mouseY, delta);
+                  int x = this.width / 2 - 160, y = this.height / 2 - 140;
+                  context.fill(x - 1, y - 1, x + 311, y + 281, 0xFF00E5FF);
+                  context.fill(x, y, x + 310, y + 280, 0xE612151E);
+                  context.drawCenteredString(this.font, "§b§lCombat Utils", x + 155, y + 10, 0xFFFFFF);
+                  if (tab == 2) {
+                      context.drawString(this.font, "FOV", x + 10, y + 205, 0xFFFFFF, false);
+                      context.drawString(this.font, "Speed", x + 10, y + 230, 0xFFFFFF, false);
+                      context.drawString(this.font, "Smooth", x + 10, y + 255, 0xFFFFFF, false);
+                  } else if (tab == 3) {
+                      context.drawString(this.font, "Range", x + 10, y + 180, 0xFFFFFF, false);
+                      context.drawString(this.font, "Backtrack", x + 10, y + 205, 0xFFFFFF, false);
+                  } else if (tab == 4) {
+                      context.drawString(this.font, "Value", x + 10, y + 135, 0xFFFFFF, false);
+                  }
+                  super.render(context, mouseX, mouseY, delta);
+              }
+
+              @Override
+              public boolean isPauseScreen() { return false; }
+
+              private static class SliderWidget extends AbstractSliderButton {
+                  private final java.util.function.LongConsumer onChange;
+                  private final String prefix; private final long min, max;
+                  public SliderWidget(int x, int y, int w, int h, String prefix, long current, long min, long max, java.util.function.LongConsumer onChange) {
+                      super(x, y, w, h, Component.empty(), (double) (current - min) / (max - min));
+                      this.onChange = onChange; this.prefix = prefix; this.min = min; this.max = max; updateMessage();
+                  }
+                  @Override protected void updateMessage() { long val = Math.round(min + (max - min) * this.value); this.setMessage(Component.literal(prefix + ": §e" + val)); }
+                  @Override protected void applyValue() { onChange.accept(Math.round(min + (max - min) * this.value)); }
               }
           }
           EOF
