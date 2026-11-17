@@ -46,7 +46,7 @@ jobs:
               public int saveLayoutKey = 79; // O
               public int sortInventoryKey = 80; // P
               public int copyChestKey = 67; // C
-              public long sortSpeedMs = 100; // Скорость сортировки
+              public long sortSpeedMs = 100;
 
               public transient Map<Integer, ItemStack> savedLayout = new HashMap<>();
 
@@ -88,15 +88,18 @@ jobs:
           import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
           import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
           import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
+          import net.minecraft.client.KeyMapping;
           import net.minecraft.client.Minecraft;
           import net.minecraft.client.gui.GuiGraphics;
           import net.minecraft.client.gui.screens.inventory.InventoryScreen;
           import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
           import net.minecraft.client.player.LocalPlayer;
+          import net.minecraft.core.component.DataComponentTypes;
           import net.minecraft.network.chat.Component;
           import net.minecraft.world.InteractionResult;
           import net.minecraft.world.entity.Entity;
           import net.minecraft.world.item.ItemStack;
+          import net.minecraft.world.item.enchantment.EnchantmentHelper;
           import net.minecraft.world.inventory.ClickType;
           import org.lwjgl.glfw.GLFW;
 
@@ -192,9 +195,16 @@ jobs:
               }
 
               private static void restoreKeys(Minecraft client) {
-                  client.options.keyUp.setDown(InputConstants.isKeyDown(client.getWindow().getWindow(), client.options.keyUp.getKey().getValue()));
-                  client.options.keyDown.setDown(InputConstants.isKeyDown(client.getWindow().getWindow(), client.options.keyDown.getKey().getValue()));
-                  client.options.keySprint.setDown(InputConstants.isKeyDown(client.getWindow().getWindow(), client.options.keySprint.getKey().getValue()));
+                  long win = client.getWindow().getWindow();
+                  
+                  InputConstants.Key upKey = InputConstants.getKey(client.options.keyUp.saveString());
+                  client.options.keyUp.setDown(InputConstants.isKeyDown(win, upKey.getValue()));
+
+                  InputConstants.Key downKey = InputConstants.getKey(client.options.keyDown.saveString());
+                  client.options.keyDown.setDown(InputConstants.isKeyDown(win, downKey.getValue()));
+
+                  InputConstants.Key sprintKey = InputConstants.getKey(client.options.keySprint.saveString());
+                  client.options.keySprint.setDown(InputConstants.isKeyDown(win, sprintKey.getValue()));
               }
 
               private static void renderHud(GuiGraphics context) {
@@ -305,11 +315,14 @@ jobs:
 
                       if (stack.isEnchanted()) {
                           sb.append(" | Зачарования: ");
-                          stack.getAllEnchantments().forEach((ench, lvl) -> sb.append(ench.value().description().getString()).append(" ").append(lvl).append(", "));
+                          EnchantmentHelper.getEnchantments(stack).forEach((ench, lvl) -> 
+                              sb.append(ench.value().description().getString()).append(" ").append(lvl).append(", ")
+                          );
                       }
 
-                      if (stack.hasTag()) {
-                          sb.append(" | NBT: ").append(stack.getTag().toString());
+                      // Замена старых NBT-тегов на новые компоненты (DataComponents) в 1.21+
+                      if (stack.has(DataComponentTypes.CUSTOM_DATA)) {
+                          sb.append(" | NBT: ").append(stack.get(DataComponentTypes.CUSTOM_DATA).toString());
                       }
                       sb.append("\n");
                   }
