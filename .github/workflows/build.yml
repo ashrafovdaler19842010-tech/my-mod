@@ -94,11 +94,12 @@ jobs:
           import net.minecraft.client.gui.screens.inventory.InventoryScreen;
           import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
           import net.minecraft.client.player.LocalPlayer;
-          import net.minecraft.component.DataComponentTypes;
+          import net.minecraft.core.component.DataComponents;
           import net.minecraft.network.chat.Component;
           import net.minecraft.world.InteractionResult;
           import net.minecraft.world.entity.Entity;
           import net.minecraft.world.item.ItemStack;
+          import net.minecraft.world.item.enchantment.ItemEnchantments;
           import net.minecraft.world.inventory.ClickType;
           import org.lwjgl.glfw.GLFW;
 
@@ -314,13 +315,15 @@ jobs:
 
                       if (stack.isEnchanted()) {
                           sb.append(" | Зачарования: ");
-                          stack.getEnchantments().forEach((ench, lvl) -> 
-                              sb.append(ench.value().description().getString()).append(" ").append(lvl).append(", ")
-                          );
+                          ItemEnchantments enchants = stack.getEnchantments();
+                          enchants.entrySet().forEach(entry -> {
+                              sb.append(entry.getKey().value().description().getString())
+                                .append(" ").append(entry.getIntValue()).append(", ");
+                          });
                       }
 
-                      if (stack.has(DataComponentTypes.CUSTOM_DATA)) {
-                          sb.append(" | NBT: ").append(stack.get(DataComponentTypes.CUSTOM_DATA).toString());
+                      if (stack.has(DataComponents.CUSTOM_DATA)) {
+                          sb.append(" | NBT: ").append(stack.get(DataComponents.CUSTOM_DATA).copyTag().toString());
                       }
                       sb.append("\n");
                   }
