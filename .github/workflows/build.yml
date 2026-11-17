@@ -49,33 +49,36 @@ jobs:
               private static final File CONFIG_FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "combat-utils.json");
 
               public boolean sprintEnabled = true;
-              public boolean critOnly = true;
               public boolean autoSprint = true;
+              public boolean critOnly = true;
               public String sprintMode = "W_TAP";
               public long startDelayMs = 15;
               public long holdDurationMs = 55;
 
-              public boolean critEnabled = true;
+              public boolean showHud = true;
               public int critX = 10, critY = 10, critSize = 15;
               public String pinkColor = "#FF69B4", whiteColor = "#FFFFFF", redColor = "#FF0000";
 
               // Triggerbot
               public boolean triggerbotEnabled = false;
               public int triggerbotKey = 67; // C
-              public int triggerDelayMs = 10;
-              public float triggerFov = 30.0f;
-              public float triggerMinDist = 1.0f;
               public float triggerMaxDist = 3.0f;
+              public int triggerDelay = 0;
 
               // Aim Assist
               public boolean aimAssistEnabled = false;
               public int aimKey = 86; // V
-              public int aimMode = 100; // 0 = Legit, 100 = Rage
-              public float aimSpeed = 1.0f;
-              public float aimSmoothness = 1.0f;
-              public float aimJitter = 0.0f;
-              public boolean aimRandomPoint = true;
-              public boolean freelookEnabled = false;
+              public float aimFov = 90.0f;
+              public int aimMode = 1; // 0=Snap, 1=Smooth, 2=Polar
+              public int aimSpeed = 30; // degrees per tick
+              public boolean hitboxAim = true;
+
+              // Killaura
+              public boolean killauraEnabled = false;
+              public int killauraKey = 82; // R
+              public boolean swordOnly = true;
+              public float killauraRange = 3.5f;
+              public int killauraDelay = 50;
 
               public int saveLayoutKey = 79; // O
               public int sortInventoryKey = 80; // P
@@ -133,9 +136,11 @@ jobs:
           import net.minecraft.world.entity.Entity;
           import net.minecraft.world.entity.LivingEntity;
           import net.minecraft.world.item.ItemStack;
+          import net.minecraft.world.item.SwordItem;
           import net.minecraft.world.item.component.ItemLore;
           import net.minecraft.world.item.enchantment.ItemEnchantments;
           import net.minecraft.world.inventory.ClickType;
+          import net.minecraft.world.phys.AABB;
           import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
 
@@ -151,13 +156,17 @@ jobs:
               private static int sortTargetSlot = -1;
               private static long nextSortActionTime = 0;
 
-              private static boolean triggerbotToggled = false;
+              private static boolean triggerToggled = false;
               private static boolean canTrigger = true;
-              private static int triggerState = 0;
-              private static long triggerTimer = 0;
+              private static long lastTriggerTime = 0;
 
-              private static boolean aimAssistActive = false;
-              private static float oldYaw = 0, oldPitch = 0;
+              private static boolean aimToggled = false;
+              private static boolean killauraToggled = false;
+
+              // Предыдущие состояния клавиш для предотвращения спама
+              private static boolean trigKeyWasDown = false;
+              private static boolean aimKeyWasDown = false;
+              private static boolean kaKeyWasDown = false;
 
               @Override
               public void onInitializeClient() {
@@ -176,120 +185,104 @@ jobs:
                       }
                       rCtrlWasDown = rCtrl;
 
-                      // Toggle Triggerbot
-                      if (InputConstants.isKeyDown(win, cfg.triggerbotKey) && client.screen == null) {
-                          if (!rCtrlWasDown) { 
-                              triggerbotToggled = !triggerbotToggled;
-                              client.player.displayClientMessage(Component.literal("Triggerbot: " + (triggerbotToggled ? "§aON" : "§cOFF")), true);
-                              rCtrlWasDown = true; 
+                      // Переключение биндов (только если не в экране)
+                      if (client.screen == null) {
+                          // Triggerbot bind
+                          if (cfg.triggerbotEnabled) {
+                              boolean tDown = InputConstants.isKeyDown(win, cfg.triggerbotKey);
+                              if (tDown && !trigKeyWasDown) {
+                                  triggerToggled = !triggerToggled;
+                                  client.player.displayClientMessage(Component.literal("Triggerbot: " + (triggerToggled ? "§aON" : "§cOFF")), true);
+                              }
+                              trigKeyWasDown = tDown;
                           }
-                      } else if (!InputConstants.isKeyDown(win, cfg.triggerbotKey)) {
-                          rCtrlWasDown = false;
+
+                          // Aim Assist bind
+                          if (cfg.aimAssistEnabled) {
+                              boolean aDown = InputConstants.isKeyDown(win, cfg.aimKey);
+                              if (aDown && !aimKeyWasDown) {
+                                  aimToggled = !aimToggled;
+                                  client.player.displayClientMessage(Component.literal("AimAssist: " + (aimToggled ? "§aON" : "§cOFF")), true);
+                              }
+                              aimKeyWasDown = aDown;
+                          }
+
+                          // Killaura bind
+                          if (cfg.killauraEnabled) {
+                              boolean kDown = InputConstants.isKeyDown(win, cfg.killauraKey);
+                              if (kDown && !kaKeyWasDown) {
+                                  killauraToggled = !killauraToggled;
+                                  client.player.displayClientMessage(Component.literal("Killaura: " + (killauraToggled ? "§aON" : "§cOFF")), true);
+                              }
+                              kaKeyWasDown = kDown;
+                          }
+                      } else {
+                          // Если открыт экран, сбрасываем зажатие
+                          trigKeyWasDown = true;
+                          aimKeyWasDown = true;
+                          kaKeyWasDown = true;
                       }
 
-                      // --- AIM ASSIST & FREELOOK ---
-                      boolean aimKeyDown = InputConstants.isKeyDown(win, cfg.aimKey);
-                      Entity target = client.crosshairPickEntity;
+                      // --- AIM ASSIST LOGIC ---
+                      if (cfg.aimAssistEnabled && aimToggled && client.screen == null) {
+                          Entity target = getBestTarget(client, cfg.aimFov);
+                          if (target instanceof LivingEntity living) {
+                              Vec3 targetPos = getTargetPoint(living, cfg.hitboxAim);
+                              rotateToTarget(client.player, targetPos, cfg);
+                          }
+                      }
 
-                      if (cfg.aimAssistEnabled && client.screen == null && target instanceof LivingEntity livingTarget) {
-                          if (aimKeyDown) {
-                              if (!aimAssistActive) {
-                                  aimAssistActive = true;
-                                  oldYaw = client.player.getYRot();
-                                  oldPitch = client.player.getXRot();
-                              }
-
-                              // Проверка FOV (чтобы не наводиться на тех, кто за спиной)
-                              Vec3 lookVec = client.player.getLookAngle();
-                              Vec3 targetVec = livingTarget.getEyePosition().subtract(client.player.getEyePosition()).normalize();
-                              double dot = lookVec.dot(targetVec);
-                              double angle = Math.toDegrees(Math.acos(dot));
-
-                              if (angle <= cfg.triggerFov) {
-                                  Vec3 targetPos = livingTarget.getEyePosition();
-                                  if (cfg.aimRandomPoint) {
-                                      // Рандомная точка по высоте тела (от колен до головы)
-                                      double randomY = livingTarget.getY() + (livingTarget.getBbHeight() * (0.3 + Math.random() * 0.6));
-                                      targetPos = new Vec3(livingTarget.getX(), randomY, livingTarget.getZ());
+                      // --- KILLAURA LOGIC ---
+                      if (cfg.killauraEnabled && killauraToggled && client.screen == null) {
+                          if (System.currentTimeMillis() - lastTriggerTime >= cfg.killauraDelay) {
+                              ItemStack held = client.player.getMainHandItem();
+                              if (!cfg.swordOnly || held.getItem() instanceof SwordItem) {
+                                  Entity target = getClosestEntity(client, cfg.killauraRange);
+                                  if (target != null) {
+                                      // Snap поворот и удар (Bypass через тихую ротацию)
+                                      float oldYaw = client.player.getYRot();
+                                      float oldPitch = client.player.getXRot();
+                                      
+                                      // Идеальный поворот
+                                      Vec3 hitPos = target.getBoundingBox().getCenter();
+                                      float[] rots = getRotations(client.player.getEyePosition(), hitPos);
+                                      
+                                      client.player.setYRot(rots[0]);
+                                      client.player.setXRot(rots[1]);
+                                      
+                                      if (client.gameMode != null && target.isAlive()) {
+                                          client.gameMode.attack(client.player, target);
+                                          client.player.swing(InteractionHand.MAIN_HAND);
+                                      }
+                                      
+                                      // Возврат (Silent)
+                                      client.player.setYRot(oldYaw);
+                                      client.player.setXRot(oldPitch);
+                                      
+                                      lastTriggerTime = System.currentTimeMillis();
                                   }
-
-                                  double dx = targetPos.x - client.player.getEyePosition().x;
-                                  double dy = targetPos.y - client.player.getEyePosition().y;
-                                  double dz = targetPos.z - client.player.getEyePosition().z;
-                                  double distXZ = Math.sqrt(dx * dx + dz * dz);
-
-                                  float targetYaw = (float)(Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F;
-                                  float targetPitch = (float)(-(Math.atan2(dy, distXZ) * 180.0 / Math.PI));
-
-                                  // Legit vs Rage (0% = медленно, 100% = мгновенно)
-                                  float legitMod = cfg.aimMode / 100.0f;
-                                  
-                                  // Smoothness влияет на скорость поворота
-                                  float yawStep = (targetYaw - client.player.getYRot()) / Math.max(1.0f, (10.0f - cfg.aimSmoothness * 9.0f));
-                                  float pitchStep = (targetPitch - client.player.getXRot()) / Math.max(1.0f, (10.0f - cfg.aimSmoothness * 9.0f));
-
-                                  // Jitter (дрожание)
-                                  float jitterY = (float) ((Math.random() - 0.5) * cfg.aimJitter);
-                                  float jitterX = (float) ((Math.random() - 0.5) * cfg.aimJitter);
-
-                                  // Применяем скорость
-                                  float finalYaw = client.player.getYRot() + (yawStep * cfg.aimSpeed * legitMod) + jitterY;
-                                  float finalPitch = client.player.getXRot() + (pitchStep * cfg.aimSpeed * legitMod) + jitterX;
-
-                                  client.player.setYRot(finalYaw);
-                                  client.player.setXRot(Mth.clamp(finalPitch, -90.0f, 90.0f));
                               }
-                          } else if (aimAssistActive) {
-                              // Если Freelook включен, возвращаем камеру обратно
-                              if (cfg.freelookEnabled) {
-                                  client.player.setYRot(oldYaw);
-                                  client.player.setXRot(oldPitch);
-                              }
-                              aimAssistActive = false;
                           }
                       }
 
                       // --- TRIGGERBOT LOGIC ---
-                      if (cfg.triggerbotEnabled && triggerbotToggled && client.screen == null) {
-                          if (client.player.onGround()) {
-                              canTrigger = true;
-                          }
+                      if (cfg.triggerbotEnabled && triggerToggled && client.screen == null) {
+                          if (client.player.onGround()) canTrigger = true;
 
-                          if (canTrigger && client.player.fallDistance > 0.0F && target != null) {
-                              float dist = client.player.distanceTo(target);
-                              
-                              // Проверка дистанции
-                              if (dist >= cfg.triggerMinDist && dist <= cfg.triggerMaxDist) {
-                                  // Проверка FOV
-                                  Vec3 lookVec = client.player.getLookAngle();
-                                  Vec3 targetVec = target.getEyePosition().subtract(client.player.getEyePosition()).normalize();
-                                  double angle = Math.toDegrees(Math.acos(lookVec.dot(targetVec)));
+                          // Улучшенная проверка на крит: в воздухе, падаем, есть цель, дистанция ОК
+                          boolean falling = !client.player.onGround() && client.player.getDeltaMovement().y < 0 && client.player.fallDistance > 0;
+                          Entity target = client.crosshairPickEntity;
 
-                                  if (angle <= cfg.triggerFov) {
-                                      if (triggerState == 0) {
-                                          // Сброс спринта
-                                          if (cfg.sprintMode.equals("W_TAP")) client.options.keyUp.setDown(false);
-                                          else if (cfg.sprintMode.equals("S_TAP")) { client.options.keyUp.setDown(false); client.options.keyDown.setDown(true); }
-                                          else if (cfg.sprintMode.equals("SPRINT")) client.options.keySprint.setDown(false);
-                                          
-                                          triggerState = 1;
-                                          triggerTimer = System.currentTimeMillis() + cfg.triggerDelayMs;
-                                      } 
-                                      else if (triggerState == 1 && System.currentTimeMillis() >= triggerTimer) {
-                                          if (client.gameMode != null && target.isAlive()) {
-                                              client.gameMode.attack(client.player, target);
-                                              client.player.swing(InteractionHand.MAIN_HAND);
-                                              client.player.resetAttackStrengthTicker();
-                                          }
-                                          restoreKeys(client);
-                                          canTrigger = false;
-                                          triggerState = 0;
-                                      }
+                          if (canTrigger && falling && target != null && client.player.distanceTo(target) <= cfg.triggerMaxDist) {
+                              if (System.currentTimeMillis() - lastTriggerTime >= cfg.triggerDelay) {
+                                  if (client.gameMode != null && target.isAlive()) {
+                                      client.gameMode.attack(client.player, target);
+                                      client.player.swing(InteractionHand.MAIN_HAND);
+                                      client.player.resetAttackStrengthTicker();
                                   }
+                                  canTrigger = false;
+                                  lastTriggerTime = System.currentTimeMillis();
                               }
-                          } else if (triggerState == 1) {
-                              restoreKeys(client);
-                              triggerState = 0;
                           }
                       }
 
@@ -308,7 +301,7 @@ jobs:
                           }
                       }
 
-                      if (cfg.autoSprint && client.screen == null && !activeReset && triggerState == 0) {
+                      if (cfg.autoSprint && client.screen == null && !activeReset) {
                           if (client.options.keyUp.isDown() && !client.player.isShiftKeyDown()) {
                               client.options.keySprint.setDown(true);
                           } else {
@@ -335,12 +328,102 @@ jobs:
                           tickSort(client, cfg);
                       }
 
-                      if (InputConstants.isKeyDown(win, cfg.copyChestKey) && client.screen instanceof AbstractContainerScreen<?> hs && !triggerbotToggled) {
+                      if (InputConstants.isKeyDown(win, cfg.copyChestKey) && client.screen instanceof AbstractContainerScreen<?> hs && !triggerToggled) {
                           copyChestInfo(client, hs);
                       }
                   });
 
                   HudRenderCallback.EVENT.register((context, tickCounter) -> renderHud(context));
+              }
+
+              // --- ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ АИМА И КИЛЛАУРЫ ---
+              private static Entity getBestTarget(Minecraft mc, float fov) {
+                  Entity best = null;
+                  double bestDist = Double.MAX_VALUE;
+                  for (Entity e : mc.level.entitiesForRendering()) {
+                      if (e == mc.player || !e.isAlive()) continue;
+                      double dist = mc.player.distanceTo(e);
+                      if (dist <= 6.0) { // Радиус поиска аима
+                          Vec3 targetVec = e.getEyePosition().subtract(mc.player.getEyePosition()).normalize();
+                          double angle = Math.toDegrees(Math.acos(mc.player.getLookAngle().dot(targetVec)));
+                          if (angle <= fov / 2.0) {
+                              if (dist < bestDist) {
+                                  bestDist = dist;
+                                  best = e;
+                              }
+                          }
+                      }
+                  }
+                  return best;
+              }
+
+              private static Entity getClosestEntity(Minecraft mc, float range) {
+                  Entity best = null;
+                  double bestDist = range;
+                  for (Entity e : mc.level.entitiesForRendering()) {
+                      if (e == mc.player || !e.isAlive()) continue;
+                      double dist = mc.player.distanceTo(e);
+                      if (dist <= bestDist) {
+                          bestDist = dist;
+                          best = e;
+                      }
+                  }
+                  return best;
+              }
+
+              private static Vec3 getTargetPoint(LivingEntity target, boolean hitbox) {
+                  if (hitbox) {
+                      AABB box = target.getBoundingBox();
+                      double randX = box.minX + Math.random() * (box.maxX - box.minX);
+                      double randY = box.minY + Math.random() * (box.maxY - box.minY);
+                      double randZ = box.minZ + Math.random() * (box.maxZ - box.minZ);
+                      return new Vec3(randX, randY, randZ);
+                  }
+                  return target.getEyePosition();
+              }
+
+              private static void rotateToTarget(LocalPlayer player, Vec3 target, ModConfig cfg) {
+                  float[] rots = getRotations(player.getEyePosition(), target);
+                  float targetYaw = rots[0];
+                  float targetPitch = rots[1];
+
+                  float deltaYaw = Mth.wrapDegrees(targetYaw - player.getYRot());
+                  float deltaPitch = targetPitch - player.getXRot();
+
+                  float newYaw = player.getYRot();
+                  float newPitch = player.getXRot();
+
+                  if (cfg.aimMode == 0) { // SNAP (Rage)
+                      newYaw = targetYaw;
+                      newPitch = targetPitch;
+                  } 
+                  else if (cfg.aimMode == 1) { // SMOOTH (Legit)
+                      float step = cfg.aimSpeed * 0.1f; // Speed 0-100 -> 0.0-10.0
+                      newYaw += Mth.clamp(deltaYaw, -step, step);
+                      newPitch += Mth.clamp(deltaPitch, -step, step);
+                  } 
+                  else if (cfg.aimMode == 2) { // POLAR
+                      float step = cfg.aimSpeed * 0.1f;
+                      // Сначала поворачиваем по горизонтали (Yaw), потом по вертикали (Pitch)
+                      if (Math.abs(deltaYaw) > 1.0f) {
+                          newYaw += Mth.clamp(deltaYaw, -step, step);
+                      } else {
+                          newPitch += Mth.clamp(deltaPitch, -step, step);
+                      }
+                  }
+
+                  player.setYRot(newYaw);
+                  player.setXRot(Mth.clamp(newPitch, -90.0f, 90.0f));
+              }
+
+              private static float[] getRotations(Vec3 from, Vec3 to) {
+                  double dx = to.x - from.x;
+                  double dy = to.y - from.y;
+                  double dz = to.z - from.z;
+                  double distXZ = Math.sqrt(dx * dx + dz * dz);
+                  float yaw = (float)(Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F;
+                  float pitch = (float)(-(Math.atan2(dy, distXZ) * 180.0 / Math.PI));
+                  return new float[]{yaw, pitch};
               }
 
               private static void restoreKeys(Minecraft client) {
@@ -360,7 +443,7 @@ jobs:
                   LocalPlayer player = mc.player;
                   if (player == null || mc.options.hideGui) return;
                   ModConfig cfg = ModConfig.INSTANCE;
-                  if (!cfg.critEnabled) return;
+                  if (!cfg.showHud) return;
 
                   boolean falling = player.fallDistance > 0.0F && !player.onGround() && !player.onClimbable() && !player.isInWater();
                   boolean inWater = player.isInWater();
@@ -392,9 +475,7 @@ jobs:
                       isSorting = false;
                       return;
                   }
-
                   if (System.currentTimeMillis() < nextSortActionTime) return;
-
                   int syncId = mc.player.inventoryMenu.containerId;
 
                   if (sortStep == 0) {
@@ -402,7 +483,6 @@ jobs:
                       for (int targetSlot = 0; targetSlot < 36; targetSlot++) {
                           ItemStack saved = cfg.savedLayout.get(targetSlot);
                           if (saved == null) continue;
-
                           ItemStack current = mc.player.getInventory().getItem(targetSlot);
                           if (ItemStack.isSameItemSameComponents(current, saved)) continue;
 
@@ -410,33 +490,20 @@ jobs:
                               if (sourceSlot == targetSlot) continue;
                               ItemStack check = mc.player.getInventory().getItem(sourceSlot);
                               if (ItemStack.isSameItemSameComponents(check, saved)) {
-                                  sortSourceSlot = sourceSlot;
-                                  sortTargetSlot = targetSlot;
-                                  found = true;
-                                  break;
+                                  sortSourceSlot = sourceSlot; sortTargetSlot = targetSlot; found = true; break;
                               }
                           }
                           if (found) break;
                       }
-
-                      if (!found) {
-                          isSorting = false;
-                          return;
-                      }
-
+                      if (!found) { isSorting = false; return; }
                       mc.gameMode.handleInventoryMouseClick(syncId, getMenuSlot(sortSourceSlot), 0, ClickType.PICKUP, mc.player);
-                      sortStep = 1;
-                      nextSortActionTime = System.currentTimeMillis() + cfg.sortSpeedMs;
-                  }
-                  else if (sortStep == 1) {
+                      sortStep = 1; nextSortActionTime = System.currentTimeMillis() + cfg.sortSpeedMs;
+                  } else if (sortStep == 1) {
                       mc.gameMode.handleInventoryMouseClick(syncId, getMenuSlot(sortTargetSlot), 0, ClickType.PICKUP, mc.player);
-                      sortStep = 2;
-                      nextSortActionTime = System.currentTimeMillis() + cfg.sortSpeedMs;
-                  }
-                  else if (sortStep == 2) {
+                      sortStep = 2; nextSortActionTime = System.currentTimeMillis() + cfg.sortSpeedMs;
+                  } else if (sortStep == 2) {
                       mc.gameMode.handleInventoryMouseClick(syncId, getMenuSlot(sortSourceSlot), 0, ClickType.PICKUP, mc.player);
-                      sortStep = 0;
-                      nextSortActionTime = System.currentTimeMillis() + cfg.sortSpeedMs;
+                      sortStep = 0; nextSortActionTime = System.currentTimeMillis() + cfg.sortSpeedMs;
                   }
               }
 
@@ -448,40 +515,24 @@ jobs:
               private static void copyChestInfo(Minecraft mc, AbstractContainerScreen<?> screen) {
                   StringBuilder sb = new StringBuilder("=== Содержимое контейнера ===\n");
                   int chestSize = screen.getMenu().slots.size();
-                  
                   for (int i = 0; i < chestSize; i++) {
                       ItemStack stack = screen.getMenu().getSlot(i).getItem();
                       if (stack.isEmpty()) continue;
-
-                      sb.append("Слот ").append(i).append(": ")
-                        .append(stack.getHoverName().getString())
-                        .append(" x").append(stack.getCount());
-
-                      if (stack.isDamageableItem() && stack.isDamaged()) {
-                          sb.append(" | Прочность: ").append(stack.getMaxDamage() - stack.getDamageValue()).append("/").append(stack.getMaxDamage());
-                      }
-
+                      sb.append("Слот ").append(i).append(": ").append(stack.getHoverName().getString()).append(" x").append(stack.getCount());
+                      if (stack.isDamageableItem() && stack.isDamaged()) sb.append(" | Прочность: ").append(stack.getMaxDamage() - stack.getDamageValue()).append("/").append(stack.getMaxDamage());
                       if (stack.isEnchanted()) {
                           sb.append(" | Зачарования: ");
                           ItemEnchantments enchants = stack.getEnchantments();
-                          enchants.entrySet().forEach(entry -> {
-                              sb.append(entry.getKey().value().description().getString())
-                                .append(" ").append(entry.getIntValue()).append(", ");
-                          });
+                          enchants.entrySet().forEach(entry -> sb.append(entry.getKey().value().description().getString()).append(" ").append(entry.getIntValue()).append(", "));
                       }
-
                       ItemLore lore = stack.get(DataComponents.LORE);
                       if (lore != null && !lore.lines().isEmpty()) {
                           sb.append(" | Lore: ");
                           lore.lines().forEach(line -> sb.append(line.getString()).append(" "));
                       }
-
-                      if (stack.has(DataComponents.CUSTOM_DATA)) {
-                          sb.append(" | NBT: ").append(stack.get(DataComponents.CUSTOM_DATA).copyTag().toString());
-                      }
+                      if (stack.has(DataComponents.CUSTOM_DATA)) sb.append(" | NBT: ").append(stack.get(DataComponents.CUSTOM_DATA).copyTag().toString());
                       sb.append("\n");
                   }
-
                   mc.keyboardHandler.setClipboard(sb.toString());
                   if (mc.player != null) mc.player.displayClientMessage(Component.literal("§aИнфа о сундуке скопирована!"), true);
               }
@@ -497,11 +548,13 @@ jobs:
           import net.minecraft.client.gui.components.EditBox;
           import net.minecraft.client.gui.screens.Screen;
           import net.minecraft.network.chat.Component;
+          import org.lwjgl.glfw.GLFW;
 
           public class ModConfigScreen extends Screen {
               private int tab = 0;
               private boolean dragging = false;
               private int dragX, dragY;
+              private int binding = 0; // 0=none, 1=trig, 2=aim, 3=ka
 
               public ModConfigScreen() { super(Component.literal("Combat Utils")); }
 
@@ -515,73 +568,62 @@ jobs:
                   this.addRenderableWidget(Button.builder(Component.literal(tab == 1 ? "§b[Crit]" : "Crit"), b -> { tab = 1; init(); }).bounds(x + 58, y + 25, 50, 20).build());
                   this.addRenderableWidget(Button.builder(Component.literal(tab == 2 ? "§b[Trig]" : "Trig"), b -> { tab = 2; init(); }).bounds(x + 111, y + 25, 50, 20).build());
                   this.addRenderableWidget(Button.builder(Component.literal(tab == 3 ? "§b[Aim]" : "Aim"), b -> { tab = 3; init(); }).bounds(x + 164, y + 25, 50, 20).build());
-                  this.addRenderableWidget(Button.builder(Component.literal(tab == 4 ? "§b[Util]" : "Util"), b -> { tab = 4; init(); }).bounds(x + 217, y + 25, 50, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal(tab == 4 ? "§b[KA]" : "KA"), b -> { tab = 4; init(); }).bounds(x + 217, y + 25, 50, 20).build());
 
                   if (tab == 0) {
                       this.addRenderableWidget(Button.builder(Component.literal("Sprint: " + (cfg.sprintEnabled ? "§aON" : "§cOFF")), b -> { cfg.sprintEnabled = !cfg.sprintEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
                       this.addRenderableWidget(Button.builder(Component.literal("AutoSprint: " + (cfg.autoSprint ? "§aON" : "§cOFF")), b -> { cfg.autoSprint = !cfg.autoSprint; ModConfig.save(); init(); }).bounds(x + 10, y + 80, 260, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Crit Only: " + (cfg.critOnly ? "§aON" : "§cOFF")), b -> { cfg.critOnly = !cfg.critOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 260, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Mode: §e" + cfg.sprintMode), b -> { 
-                          if (cfg.sprintMode.equals("W_TAP")) cfg.sprintMode = "S_TAP";
-                          else if (cfg.sprintMode.equals("S_TAP")) cfg.sprintMode = "SPRINT";
-                          else cfg.sprintMode = "W_TAP";
-                          ModConfig.save(); init();
-                      }).bounds(x + 10, y + 130, 260, 20).build());
                   } else if (tab == 1) {
-                      this.addRenderableWidget(Button.builder(Component.literal("Crit Square: " + (cfg.critEnabled ? "§aON" : "§cOFF")), b -> { cfg.critEnabled = !cfg.critEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
-                      EditBox pinkBox = new EditBox(this.font, x + 100, y + 85, 170, 18, Component.literal("Pink"));
-                      pinkBox.setValue(cfg.pinkColor);
-                      this.addRenderableWidget(pinkBox);
-                      EditBox redBox = new EditBox(this.font, x + 100, y + 110, 170, 18, Component.literal("Red"));
-                      redBox.setValue(cfg.redColor);
-                      this.addRenderableWidget(redBox);
-                      EditBox sizeBox = new EditBox(this.font, x + 100, y + 135, 170, 18, Component.literal("Size"));
-                      sizeBox.setValue(String.valueOf(cfg.critSize));
-                      this.addRenderableWidget(sizeBox);
-                      this.addRenderableWidget(Button.builder(Component.literal("§aSave Colors"), b -> {
-                          cfg.pinkColor = pinkBox.getValue();
-                          cfg.redColor = redBox.getValue();
-                          try { cfg.critSize = Integer.parseInt(sizeBox.getValue()); } catch (Exception ignored) {}
-                          ModConfig.save(); init();
-                      }).bounds(x + 10, y + 160, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Show HUD: " + (cfg.showHud ? "§aON" : "§cOFF")), b -> { cfg.showHud = !cfg.showHud; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Crit Only: " + (cfg.critOnly ? "§aON" : "§cOFF")), b -> { cfg.critOnly = !cfg.critOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 80, 260, 20).build());
                   } else if (tab == 2) {
                       this.addRenderableWidget(Button.builder(Component.literal("Triggerbot: " + (cfg.triggerbotEnabled ? "§aON" : "§cOFF")), b -> { cfg.triggerbotEnabled = !cfg.triggerbotEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 80, 260, 20, "Delay (ms)", cfg.triggerDelayMs, 0, 200, val -> { cfg.triggerDelayMs = (int)val; ModConfig.save(); }));
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 105, 260, 20, "FOV (Angle)", (long)cfg.triggerFov, 10, 180, val -> { cfg.triggerFov = (float)val; ModConfig.save(); }));
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 260, 20, "Min Dist", (long)(cfg.triggerMinDist*10), 10, 60, val -> { cfg.triggerMinDist = val / 10f; ModConfig.save(); }));
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 155, 260, 20, "Max Dist", (long)(cfg.triggerMaxDist*10), 10, 60, val -> { cfg.triggerMaxDist = val / 10f; ModConfig.save(); }));
+                      this.addRenderableWidget(Button.builder(Component.literal(binding == 1 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.triggerbotKey)), b -> { binding = 1; init(); }).bounds(x + 10, y + 80, 260, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 105, 260, 20, "Max Dist (x10)", (long)(cfg.triggerMaxDist*10), 10, 60, val -> { cfg.triggerMaxDist = val / 10f; ModConfig.save(); }));
                   } else if (tab == 3) {
                       this.addRenderableWidget(Button.builder(Component.literal("Aim Assist: " + (cfg.aimAssistEnabled ? "§aON" : "§cOFF")), b -> { cfg.aimAssistEnabled = !cfg.aimAssistEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Freelook (Hold): " + (cfg.freelookEnabled ? "§aON" : "§cOFF")), b -> { cfg.freelookEnabled = !cfg.freelookEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 80, 260, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Random Point: " + (cfg.aimRandomPoint ? "§aON" : "§cOFF")), b -> { cfg.aimRandomPoint = !cfg.aimRandomPoint; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 260, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 260, 20, "Legit(0)-Rage(100)", cfg.aimMode, 0, 100, val -> { cfg.aimMode = (int)val; ModConfig.save(); }));
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 155, 260, 20, "Speed", (long)(cfg.aimSpeed*10), 1, 50, val -> { cfg.aimSpeed = val / 10f; ModConfig.save(); }));
+                      this.addRenderableWidget(Button.builder(Component.literal(binding == 2 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.aimKey)), b -> { binding = 2; init(); }).bounds(x + 10, y + 80, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Mode: " + (cfg.aimMode == 0 ? "§cSnap" : cfg.aimMode == 1 ? "§aSmooth" : "§ePolar")), b -> { cfg.aimMode = (cfg.aimMode + 1) % 3; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Hitbox Aim: " + (cfg.hitboxAim ? "§aON" : "§cOFF")), b -> { cfg.hitboxAim = !cfg.hitboxAim; ModConfig.save(); init(); }).bounds(x + 10, y + 130, 260, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 155, 260, 20, "FOV", (long)cfg.aimFov, 10, 360, val -> { cfg.aimFov = (float)val; ModConfig.save(); }));
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 180, 260, 20, "Speed", (long)cfg.aimSpeed, 1, 100, val -> { cfg.aimSpeed = (int)val; ModConfig.save(); }));
                   } else {
-                      this.addRenderableWidget(Button.builder(Component.literal("Save Bind: §e" + (char)cfg.saveLayoutKey), b -> {}).bounds(x + 10, y + 55, 260, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Sort Bind: §e" + (char)cfg.sortInventoryKey), b -> {}).bounds(x + 10, y + 80, 260, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Copy Chest Bind: §e" + (char)cfg.copyChestKey), b -> {}).bounds(x + 10, y + 105, 260, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 260, 20, "Sort Speed", cfg.sortSpeedMs, 30, 300, val -> { cfg.sortSpeedMs = val; ModConfig.save(); }));
+                      this.addRenderableWidget(Button.builder(Component.literal("Killaura: " + (cfg.killauraEnabled ? "§aON" : "§cOFF")), b -> { cfg.killauraEnabled = !cfg.killauraEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal(binding == 3 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.killauraKey)), b -> { binding = 3; init(); }).bounds(x + 10, y + 80, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Sword Only: " + (cfg.swordOnly ? "§aON" : "§cOFF")), b -> { cfg.swordOnly = !cfg.swordOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 260, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 260, 20, "Range (x10)", (long)(cfg.killauraRange*10), 10, 60, val -> { cfg.killauraRange = val / 10f; ModConfig.save(); }));
                   }
+              }
+
+              private String getKeyName(int key) {
+                  return GLFW.glfwGetKeyName(key, 0) != null ? GLFW.glfwGetKeyName(key, 0).toUpperCase() : "NONE";
+              }
+
+              @Override
+              public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+                  if (binding != 0) {
+                      ModConfig cfg = ModConfig.INSTANCE;
+                      if (binding == 1) cfg.triggerbotKey = keyCode;
+                      else if (binding == 2) cfg.aimKey = keyCode;
+                      else if (binding == 3) cfg.killauraKey = keyCode;
+                      binding = 0;
+                      ModConfig.save();
+                      init();
+                      return true;
+                  }
+                  return super.keyPressed(keyCode, scanCode, modifiers);
               }
 
               @Override
               public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
                   this.renderBackground(context, mouseX, mouseY, delta);
-                  ModConfig cfg = ModConfig.INSTANCE;
                   int x = this.width / 2 - 140, y = this.height / 2 - 120;
                   context.fill(x - 1, y - 1, x + 271, y + 221, 0xFF00E5FF);
                   context.fill(x, y, x + 270, y + 220, 0xE612151E);
                   context.drawCenteredString(this.font, "§b§lCombat Utils", x + 135, y + 10, 0xFFFFFF);
-                  
-                  if (tab == 1) {
-                      context.drawString(this.font, "Pink:", x + 10, y + 90, 0xFF69B4, false);
-                      context.drawString(this.font, "Red:", x + 10, y + 115, 0xFF0000, false);
-                      context.drawString(this.font, "Size:", x + 10, y + 140, 0xFFFFFF, false);
-                      context.fill(cfg.critX, cfg.critY, cfg.critX + cfg.critSize, cfg.critY + cfg.critSize, ModConfig.parseHexColor(cfg.whiteColor));
-                      context.renderOutline(cfg.critX - 1, cfg.critY - 1, cfg.critSize + 2, cfg.critSize + 2, 0xFFFFFFFF);
-                  } else if (tab == 3) {
-                      context.drawString(this.font, "Aim Speed:", x + 10, y + 160, 0xFFFFFF, false);
-                      context.drawString(this.font, "Mod:", x + 10, y + 135, 0xFFFFFF, false);
+                  if (tab == 3) {
+                      context.drawString(this.font, "FOV", x + 10, y + 160, 0xFFFFFF, false);
+                      context.drawString(this.font, "Speed", x + 10, y + 185, 0xFFFFFF, false);
                   }
                   super.render(context, mouseX, mouseY, delta);
               }
@@ -590,10 +632,7 @@ jobs:
               public boolean mouseClicked(double mouseX, double mouseY, int button) {
                   ModConfig cfg = ModConfig.INSTANCE;
                   if (tab == 1 && button == 0 && mouseX >= cfg.critX && mouseX <= cfg.critX + cfg.critSize && mouseY >= cfg.critY && mouseY <= cfg.critY + cfg.critSize) {
-                      dragging = true;
-                      dragX = (int) mouseX - cfg.critX;
-                      dragY = (int) mouseY - cfg.critY;
-                      return true;
+                      dragging = true; dragX = (int) mouseX - cfg.critX; dragY = (int) mouseY - cfg.critY; return true;
                   }
                   return super.mouseClicked(mouseX, mouseY, button);
               }
@@ -621,24 +660,12 @@ jobs:
                   private final java.util.function.LongConsumer onChange;
                   private final String prefix;
                   private final long min, max;
-
                   public SliderWidget(int x, int y, int w, int h, String prefix, long current, long min, long max, java.util.function.LongConsumer onChange) {
                       super(x, y, w, h, Component.empty(), (double) (current - min) / (max - min));
-                      this.onChange = onChange;
-                      this.prefix = prefix;
-                      this.min = min;
-                      this.max = max;
-                      updateMessage();
+                      this.onChange = onChange; this.prefix = prefix; this.min = min; this.max = max; updateMessage();
                   }
-                  @Override
-                  protected void updateMessage() {
-                      long val = Math.round(min + (max - min) * this.value);
-                      this.setMessage(Component.literal(prefix + ": §e" + val));
-                  }
-                  @Override
-                  protected void applyValue() {
-                      onChange.accept(Math.round(min + (max - min) * this.value));
-                  }
+                  @Override protected void updateMessage() { long val = Math.round(min + (max - min) * this.value); this.setMessage(Component.literal(prefix + ": §e" + val)); }
+                  @Override protected void applyValue() { onChange.accept(Math.round(min + (max - min) * this.value)); }
               }
           }
           EOF
