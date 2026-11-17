@@ -70,13 +70,18 @@ jobs:
               public int aimKey = 86; // V
               public float aimFov = 90.0f;
               public int aimMode = 1; // 0=Snap, 1=Smooth, 2=Polar
-              public int aimSpeed = 30; // degrees per tick
+              public int aimSpeed = 30;
+              public int aimSmoothness = 50;
+              public boolean aimWallCheck = true;
+              public boolean aimSilent = true;
               public boolean hitboxAim = true;
 
               // Killaura
               public boolean killauraEnabled = false;
               public int killauraKey = 82; // R
               public boolean swordOnly = true;
+              public boolean killauraWallCheck = true;
+              public boolean killauraSilent = true;
               public float killauraRange = 3.5f;
               public int killauraDelay = 50;
 
@@ -131,12 +136,13 @@ jobs:
           import net.minecraft.client.player.LocalPlayer;
           import net.minecraft.core.component.DataComponents;
           import net.minecraft.network.chat.Component;
+          import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
+          import net.minecraft.tags.ItemTags;
           import net.minecraft.util.Mth;
           import net.minecraft.world.InteractionHand;
           import net.minecraft.world.entity.Entity;
           import net.minecraft.world.entity.LivingEntity;
           import net.minecraft.world.item.ItemStack;
-          import net.minecraft.world.item.SwordItem;
           import net.minecraft.world.item.component.ItemLore;
           import net.minecraft.world.item.enchantment.ItemEnchantments;
           import net.minecraft.world.inventory.ClickType;
@@ -163,7 +169,6 @@ jobs:
               private static boolean aimToggled = false;
               private static boolean killauraToggled = false;
 
-              // Предыдущие состояния клавиш для предотвращения спама
               private static boolean trigKeyWasDown = false;
               private static boolean aimKeyWasDown = false;
               private static boolean kaKeyWasDown = false;
@@ -177,7 +182,6 @@ jobs:
                       long win = client.getWindow().getWindow();
                       ModConfig cfg = ModConfig.INSTANCE;
 
-                      // Меню
                       boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
                           if (client.screen instanceof ModConfigScreen) client.setScreen(null);
@@ -185,9 +189,7 @@ jobs:
                       }
                       rCtrlWasDown = rCtrl;
 
-                      // Переключение биндов (только если не в экране)
                       if (client.screen == null) {
-                          // Triggerbot bind
                           if (cfg.triggerbotEnabled) {
                               boolean tDown = InputConstants.isKeyDown(win, cfg.triggerbotKey);
                               if (tDown && !trigKeyWasDown) {
@@ -196,8 +198,6 @@ jobs:
                               }
                               trigKeyWasDown = tDown;
                           }
-
-                          // Aim Assist bind
                           if (cfg.aimAssistEnabled) {
                               boolean aDown = InputConstants.isKeyDown(win, cfg.aimKey);
                               if (aDown && !aimKeyWasDown) {
@@ -206,8 +206,6 @@ jobs:
                               }
                               aimKeyWasDown = aDown;
                           }
-
-                          // Killaura bind
                           if (cfg.killauraEnabled) {
                               boolean kDown = InputConstants.isKeyDown(win, cfg.killauraKey);
                               if (kDown && !kaKeyWasDown) {
@@ -217,18 +215,15 @@ jobs:
                               kaKeyWasDown = kDown;
                           }
                       } else {
-                          // Если открыт экран, сбрасываем зажатие
-                          trigKeyWasDown = true;
-                          aimKeyWasDown = true;
-                          kaKeyWasDown = true;
+                          trigKeyWasDown = true; aimKeyWasDown = true; kaKeyWasDown = true;
                       }
 
                       // --- AIM ASSIST LOGIC ---
                       if (cfg.aimAssistEnabled && aimToggled && client.screen == null) {
-                          Entity target = getBestTarget(client, cfg.aimFov);
+                          Entity target = getBestTarget(client, cfg.aimFov, cfg.aimWallCheck);
                           if (target instanceof LivingEntity living) {
                               Vec3 targetPos = getTargetPoint(living, cfg.hitboxAim);
-                              rotateToTarget(client.player, targetPos, cfg);
+                              applyRotation(client, targetPos, cfg, cfg.aimMode, cfg.aimSpeed, cfg.aimSilent, cfg.aimSmoothness);
                           }
                       }
 
@@ -236,29 +231,15 @@ jobs:
                       if (cfg.killauraEnabled && killauraToggled && client.screen == null) {
                           if (System.currentTimeMillis() - lastTriggerTime >= cfg.killauraDelay) {
                               ItemStack held = client.player.getMainHandItem();
-                              if (!cfg.swordOnly || held.getItem() instanceof SwordItem) {
-                                  Entity target = getClosestEntity(client, cfg.killauraRange);
+                              if (!cfg.swordOnly || held.is(ItemTags.SWORDS)) {
+                                  Entity target = getClosestEntity(client, cfg.killauraRange, cfg.killauraWallCheck);
                                   if (target != null) {
-                                      // Snap поворот и удар (Bypass через тихую ротацию)
-                                      float oldYaw = client.player.getYRot();
-                                      float oldPitch = client.player.getXRot();
-                                      
-                                      // Идеальный поворот
-                                      Vec3 hitPos = target.getBoundingBox().getCenter();
-                                      float[] rots = getRotations(client.player.getEyePosition(), hitPos);
-                                      
-                                      client.player.setYRot(rots[0]);
-                                      client.player.setXRot(rots[1]);
+                                      applyRotation(client, target.getBoundingBox().getCenter(), cfg, 0, 100, cfg.killauraSilent, 0);
                                       
                                       if (client.gameMode != null && target.isAlive()) {
                                           client.gameMode.attack(client.player, target);
                                           client.player.swing(InteractionHand.MAIN_HAND);
                                       }
-                                      
-                                      // Возврат (Silent)
-                                      client.player.setYRot(oldYaw);
-                                      client.player.setXRot(oldPitch);
-                                      
                                       lastTriggerTime = System.currentTimeMillis();
                                   }
                               }
@@ -269,7 +250,6 @@ jobs:
                       if (cfg.triggerbotEnabled && triggerToggled && client.screen == null) {
                           if (client.player.onGround()) canTrigger = true;
 
-                          // Улучшенная проверка на крит: в воздухе, падаем, есть цель, дистанция ОК
                           boolean falling = !client.player.onGround() && client.player.getDeltaMovement().y < 0 && client.player.fallDistance > 0;
                           Entity target = client.crosshairPickEntity;
 
@@ -286,7 +266,7 @@ jobs:
                           }
                       }
 
-                      // --- AUTO SPRINT LOGIC ---
+                      // --- AUTO SPRINT ---
                       long now = System.currentTimeMillis();
                       boolean activeReset = false;
                       if (cfg.sprintEnabled && resetting) {
@@ -324,9 +304,7 @@ jobs:
                           startSorting();
                       }
 
-                      if (isSorting) {
-                          tickSort(client, cfg);
-                      }
+                      if (isSorting) tickSort(client, cfg);
 
                       if (InputConstants.isKeyDown(win, cfg.copyChestKey) && client.screen instanceof AbstractContainerScreen<?> hs && !triggerToggled) {
                           copyChestInfo(client, hs);
@@ -336,34 +314,78 @@ jobs:
                   HudRenderCallback.EVENT.register((context, tickCounter) -> renderHud(context));
               }
 
-              // --- ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ АИМА И КИЛЛАУРЫ ---
-              private static Entity getBestTarget(Minecraft mc, float fov) {
+              // --- БАЙПАС РОТАЦИЙ ---
+              private static void applyRotation(Minecraft mc, Vec3 target, ModConfig cfg, int mode, int speed, boolean silent, int smoothness) {
+                  LocalPlayer player = mc.player;
+                  float[] rots = getRotations(player.getEyePosition(), target);
+                  float targetYaw = rots[0];
+                  float targetPitch = rots[1];
+
+                  float deltaYaw = Mth.wrapDegrees(targetYaw - player.getYRot());
+                  float deltaPitch = targetPitch - player.getXRot();
+
+                  float newYaw = player.getYRot();
+                  float newPitch = player.getXRot();
+
+                  if (mode == 0) { // Snap
+                      newYaw = targetYaw;
+                      newPitch = targetPitch;
+                  } else {
+                      // Рандомизация для обхода Grim/Matrix (анти-GCD)
+                      float randomFactor = (float) ((Math.random() - 0.5) * 0.5f); 
+                      float step = (speed * 0.1f) * (1.0f - (smoothness / 100f * 0.9f));
+                      
+                      if (mode == 1) { // Smooth
+                          newYaw += Mth.clamp(deltaYaw, -step, step) + randomFactor;
+                          newPitch += Mth.clamp(deltaPitch, -step, step) + randomFactor;
+                      } else if (mode == 2) { // Polar
+                          // Медленная плавная наводка по дуге
+                          if (Math.abs(deltaYaw) > 1.0f) {
+                              newYaw += Mth.clamp(deltaYaw, -step * 0.5f, step * 0.5f);
+                          } else {
+                              newPitch += Mth.clamp(deltaPitch, -step * 0.5f, step * 0.5f);
+                          }
+                      }
+                  }
+
+                  newPitch = Mth.clamp(newPitch, -90.0f, 90.0f);
+
+                  if (silent) {
+                      // Отправляем пакет серверу с новым поворотом, но камеру не двигаем
+                      player.connection.send(new ServerboundMovePlayerPacket.Rot(newYaw, newPitch, player.onGround()));
+                  } else {
+                      player.setYRot(newYaw);
+                      player.setXRot(newPitch);
+                  }
+              }
+
+              private static Entity getBestTarget(Minecraft mc, float fov, boolean wallCheck) {
                   Entity best = null;
                   double bestDist = Double.MAX_VALUE;
                   for (Entity e : mc.level.entitiesForRendering()) {
                       if (e == mc.player || !e.isAlive()) continue;
                       double dist = mc.player.distanceTo(e);
-                      if (dist <= 6.0) { // Радиус поиска аима
+                      if (dist <= 6.0) { 
+                          if (wallCheck && !mc.player.hasLineOfSight(e)) continue;
+                          
                           Vec3 targetVec = e.getEyePosition().subtract(mc.player.getEyePosition()).normalize();
                           double angle = Math.toDegrees(Math.acos(mc.player.getLookAngle().dot(targetVec)));
                           if (angle <= fov / 2.0) {
-                              if (dist < bestDist) {
-                                  bestDist = dist;
-                                  best = e;
-                              }
+                              if (dist < bestDist) { bestDist = dist; best = e; }
                           }
                       }
                   }
                   return best;
               }
 
-              private static Entity getClosestEntity(Minecraft mc, float range) {
+              private static Entity getClosestEntity(Minecraft mc, float range, boolean wallCheck) {
                   Entity best = null;
                   double bestDist = range;
                   for (Entity e : mc.level.entitiesForRendering()) {
                       if (e == mc.player || !e.isAlive()) continue;
                       double dist = mc.player.distanceTo(e);
                       if (dist <= bestDist) {
+                          if (wallCheck && !mc.player.hasLineOfSight(e)) continue;
                           bestDist = dist;
                           best = e;
                       }
@@ -382,40 +404,6 @@ jobs:
                   return target.getEyePosition();
               }
 
-              private static void rotateToTarget(LocalPlayer player, Vec3 target, ModConfig cfg) {
-                  float[] rots = getRotations(player.getEyePosition(), target);
-                  float targetYaw = rots[0];
-                  float targetPitch = rots[1];
-
-                  float deltaYaw = Mth.wrapDegrees(targetYaw - player.getYRot());
-                  float deltaPitch = targetPitch - player.getXRot();
-
-                  float newYaw = player.getYRot();
-                  float newPitch = player.getXRot();
-
-                  if (cfg.aimMode == 0) { // SNAP (Rage)
-                      newYaw = targetYaw;
-                      newPitch = targetPitch;
-                  } 
-                  else if (cfg.aimMode == 1) { // SMOOTH (Legit)
-                      float step = cfg.aimSpeed * 0.1f; // Speed 0-100 -> 0.0-10.0
-                      newYaw += Mth.clamp(deltaYaw, -step, step);
-                      newPitch += Mth.clamp(deltaPitch, -step, step);
-                  } 
-                  else if (cfg.aimMode == 2) { // POLAR
-                      float step = cfg.aimSpeed * 0.1f;
-                      // Сначала поворачиваем по горизонтали (Yaw), потом по вертикали (Pitch)
-                      if (Math.abs(deltaYaw) > 1.0f) {
-                          newYaw += Mth.clamp(deltaYaw, -step, step);
-                      } else {
-                          newPitch += Mth.clamp(deltaPitch, -step, step);
-                      }
-                  }
-
-                  player.setYRot(newYaw);
-                  player.setXRot(Mth.clamp(newPitch, -90.0f, 90.0f));
-              }
-
               private static float[] getRotations(Vec3 from, Vec3 to) {
                   double dx = to.x - from.x;
                   double dy = to.y - from.y;
@@ -430,10 +418,8 @@ jobs:
                   long win = client.getWindow().getWindow();
                   InputConstants.Key upKey = InputConstants.getKey(client.options.keyUp.saveString());
                   client.options.keyUp.setDown(InputConstants.isKeyDown(win, upKey.getValue()));
-
                   InputConstants.Key downKey = InputConstants.getKey(client.options.keyDown.saveString());
                   client.options.keyDown.setDown(InputConstants.isKeyDown(win, downKey.getValue()));
-
                   InputConstants.Key sprintKey = InputConstants.getKey(client.options.keySprint.saveString());
                   client.options.keySprint.setDown(InputConstants.isKeyDown(win, sprintKey.getValue()));
               }
@@ -450,9 +436,7 @@ jobs:
                   double dist = 100.0;
 
                   Entity target = mc.crosshairPickEntity;
-                  if (target != null) {
-                      dist = player.distanceTo(target);
-                  }
+                  if (target != null) dist = player.distanceTo(target);
 
                   int color = ModConfig.parseHexColor(cfg.whiteColor);
                   if (dist <= 3.0) {
@@ -464,20 +448,12 @@ jobs:
                   context.renderOutline(cfg.critX - 1, cfg.critY - 1, cfg.critSize + 2, cfg.critSize + 2, 0xFF000000);
               }
 
-              private static void startSorting() {
-                  isSorting = true;
-                  sortStep = 0;
-                  nextSortActionTime = System.currentTimeMillis();
-              }
+              private static void startSorting() { isSorting = true; sortStep = 0; nextSortActionTime = System.currentTimeMillis(); }
 
               private static void tickSort(Minecraft mc, ModConfig cfg) {
-                  if (!(mc.screen instanceof InventoryScreen) || mc.player == null || mc.gameMode == null) {
-                      isSorting = false;
-                      return;
-                  }
+                  if (!(mc.screen instanceof InventoryScreen) || mc.player == null || mc.gameMode == null) { isSorting = false; return; }
                   if (System.currentTimeMillis() < nextSortActionTime) return;
                   int syncId = mc.player.inventoryMenu.containerId;
-
                   if (sortStep == 0) {
                       boolean found = false;
                       for (int targetSlot = 0; targetSlot < 36; targetSlot++) {
@@ -485,13 +461,10 @@ jobs:
                           if (saved == null) continue;
                           ItemStack current = mc.player.getInventory().getItem(targetSlot);
                           if (ItemStack.isSameItemSameComponents(current, saved)) continue;
-
                           for (int sourceSlot = 0; sourceSlot < 36; sourceSlot++) {
                               if (sourceSlot == targetSlot) continue;
                               ItemStack check = mc.player.getInventory().getItem(sourceSlot);
-                              if (ItemStack.isSameItemSameComponents(check, saved)) {
-                                  sortSourceSlot = sourceSlot; sortTargetSlot = targetSlot; found = true; break;
-                              }
+                              if (ItemStack.isSameItemSameComponents(check, saved)) { sortSourceSlot = sourceSlot; sortTargetSlot = targetSlot; found = true; break; }
                           }
                           if (found) break;
                       }
@@ -507,10 +480,7 @@ jobs:
                   }
               }
 
-              private static int getMenuSlot(int invSlot) {
-                  if (invSlot < 9) return 36 + invSlot;
-                  return invSlot;
-              }
+              private static int getMenuSlot(int invSlot) { return invSlot < 9 ? 36 + invSlot : invSlot; }
 
               private static void copyChestInfo(Minecraft mc, AbstractContainerScreen<?> screen) {
                   StringBuilder sb = new StringBuilder("=== Содержимое контейнера ===\n");
@@ -562,7 +532,7 @@ jobs:
               protected void init() {
                   this.clearWidgets();
                   ModConfig cfg = ModConfig.INSTANCE;
-                  int x = this.width / 2 - 140, y = this.height / 2 - 120;
+                  int x = this.width / 2 - 140, y = this.height / 2 - 130;
 
                   this.addRenderableWidget(Button.builder(Component.literal(tab == 0 ? "§b[Spr]" : "Spr"), b -> { tab = 0; init(); }).bounds(x + 5, y + 25, 50, 20).build());
                   this.addRenderableWidget(Button.builder(Component.literal(tab == 1 ? "§b[Crit]" : "Crit"), b -> { tab = 1; init(); }).bounds(x + 58, y + 25, 50, 20).build());
@@ -581,23 +551,24 @@ jobs:
                       this.addRenderableWidget(Button.builder(Component.literal(binding == 1 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.triggerbotKey)), b -> { binding = 1; init(); }).bounds(x + 10, y + 80, 260, 20).build());
                       this.addRenderableWidget(new SliderWidget(x + 10, y + 105, 260, 20, "Max Dist (x10)", (long)(cfg.triggerMaxDist*10), 10, 60, val -> { cfg.triggerMaxDist = val / 10f; ModConfig.save(); }));
                   } else if (tab == 3) {
-                      this.addRenderableWidget(Button.builder(Component.literal("Aim Assist: " + (cfg.aimAssistEnabled ? "§aON" : "§cOFF")), b -> { cfg.aimAssistEnabled = !cfg.aimAssistEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal(binding == 2 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.aimKey)), b -> { binding = 2; init(); }).bounds(x + 10, y + 80, 260, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Mode: " + (cfg.aimMode == 0 ? "§cSnap" : cfg.aimMode == 1 ? "§aSmooth" : "§ePolar")), b -> { cfg.aimMode = (cfg.aimMode + 1) % 3; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 260, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Hitbox Aim: " + (cfg.hitboxAim ? "§aON" : "§cOFF")), b -> { cfg.hitboxAim = !cfg.hitboxAim; ModConfig.save(); init(); }).bounds(x + 10, y + 130, 260, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 155, 260, 20, "FOV", (long)cfg.aimFov, 10, 360, val -> { cfg.aimFov = (float)val; ModConfig.save(); }));
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 180, 260, 20, "Speed", (long)cfg.aimSpeed, 1, 100, val -> { cfg.aimSpeed = (int)val; ModConfig.save(); }));
+                      this.addRenderableWidget(Button.builder(Component.literal("Aim Assist: " + (cfg.aimAssistEnabled ? "§aON" : "§cOFF")), b -> { cfg.aimAssistEnabled = !cfg.aimAssistEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 50, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal(binding == 2 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.aimKey)), b -> { binding = 2; init(); }).bounds(x + 10, y + 75, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Mode: " + (cfg.aimMode == 0 ? "§cSnap" : cfg.aimMode == 1 ? "§aSmooth" : "§ePolar")), b -> { cfg.aimMode = (cfg.aimMode + 1) % 3; ModConfig.save(); init(); }).bounds(x + 10, y + 100, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Silent Aim: " + (cfg.aimSilent ? "§aON" : "§cOFF")), b -> { cfg.aimSilent = !cfg.aimSilent; ModConfig.save(); init(); }).bounds(x + 10, y + 125, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Wall Check: " + (cfg.aimWallCheck ? "§aON" : "§cOFF")), b -> { cfg.aimWallCheck = !cfg.aimWallCheck; ModConfig.save(); init(); }).bounds(x + 10, y + 150, 260, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 175, 260, 20, "FOV", (long)cfg.aimFov, 10, 360, val -> { cfg.aimFov = (float)val; ModConfig.save(); }));
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 200, 260, 20, "Smoothness", cfg.aimSmoothness, 0, 100, val -> { cfg.aimSmoothness = (int)val; ModConfig.save(); }));
                   } else {
-                      this.addRenderableWidget(Button.builder(Component.literal("Killaura: " + (cfg.killauraEnabled ? "§aON" : "§cOFF")), b -> { cfg.killauraEnabled = !cfg.killauraEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 55, 260, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal(binding == 3 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.killauraKey)), b -> { binding = 3; init(); }).bounds(x + 10, y + 80, 260, 20).build());
-                      this.addRenderableWidget(Button.builder(Component.literal("Sword Only: " + (cfg.swordOnly ? "§aON" : "§cOFF")), b -> { cfg.swordOnly = !cfg.swordOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 105, 260, 20).build());
-                      this.addRenderableWidget(new SliderWidget(x + 10, y + 130, 260, 20, "Range (x10)", (long)(cfg.killauraRange*10), 10, 60, val -> { cfg.killauraRange = val / 10f; ModConfig.save(); }));
+                      this.addRenderableWidget(Button.builder(Component.literal("Killaura: " + (cfg.killauraEnabled ? "§aON" : "§cOFF")), b -> { cfg.killauraEnabled = !cfg.killauraEnabled; ModConfig.save(); init(); }).bounds(x + 10, y + 50, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal(binding == 3 ? "§ePress Key..." : "Bind: " + getKeyName(cfg.killauraKey)), b -> { binding = 3; init(); }).bounds(x + 10, y + 75, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Sword Only: " + (cfg.swordOnly ? "§aON" : "§cOFF")), b -> { cfg.swordOnly = !cfg.swordOnly; ModConfig.save(); init(); }).bounds(x + 10, y + 100, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Silent KA: " + (cfg.killauraSilent ? "§aON" : "§cOFF")), b -> { cfg.killauraSilent = !cfg.killauraSilent; ModConfig.save(); init(); }).bounds(x + 10, y + 125, 260, 20).build());
+                      this.addRenderableWidget(Button.builder(Component.literal("Wall Check: " + (cfg.killauraWallCheck ? "§aON" : "§cOFF")), b -> { cfg.killauraWallCheck = !cfg.killauraWallCheck; ModConfig.save(); init(); }).bounds(x + 10, y + 150, 260, 20).build());
+                      this.addRenderableWidget(new SliderWidget(x + 10, y + 175, 260, 20, "Range (x10)", (long)(cfg.killauraRange*10), 10, 60, val -> { cfg.killauraRange = val / 10f; ModConfig.save(); }));
                   }
               }
 
-              private String getKeyName(int key) {
-                  return GLFW.glfwGetKeyName(key, 0) != null ? GLFW.glfwGetKeyName(key, 0).toUpperCase() : "NONE";
-              }
+              private String getKeyName(int key) { return GLFW.glfwGetKeyName(key, 0) != null ? GLFW.glfwGetKeyName(key, 0).toUpperCase() : "NONE"; }
 
               @Override
               public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
@@ -606,10 +577,7 @@ jobs:
                       if (binding == 1) cfg.triggerbotKey = keyCode;
                       else if (binding == 2) cfg.aimKey = keyCode;
                       else if (binding == 3) cfg.killauraKey = keyCode;
-                      binding = 0;
-                      ModConfig.save();
-                      init();
-                      return true;
+                      binding = 0; ModConfig.save(); init(); return true;
                   }
                   return super.keyPressed(keyCode, scanCode, modifiers);
               }
@@ -617,13 +585,13 @@ jobs:
               @Override
               public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
                   this.renderBackground(context, mouseX, mouseY, delta);
-                  int x = this.width / 2 - 140, y = this.height / 2 - 120;
-                  context.fill(x - 1, y - 1, x + 271, y + 221, 0xFF00E5FF);
-                  context.fill(x, y, x + 270, y + 220, 0xE612151E);
+                  int x = this.width / 2 - 140, y = this.height / 2 - 130;
+                  context.fill(x - 1, y - 1, x + 271, y + 241, 0xFF00E5FF);
+                  context.fill(x, y, x + 270, y + 240, 0xE612151E);
                   context.drawCenteredString(this.font, "§b§lCombat Utils", x + 135, y + 10, 0xFFFFFF);
                   if (tab == 3) {
-                      context.drawString(this.font, "FOV", x + 10, y + 160, 0xFFFFFF, false);
-                      context.drawString(this.font, "Speed", x + 10, y + 185, 0xFFFFFF, false);
+                      context.drawString(this.font, "FOV", x + 10, y + 180, 0xFFFFFF, false);
+                      context.drawString(this.font, "Smoothness", x + 10, y + 205, 0xFFFFFF, false);
                   }
                   super.render(context, mouseX, mouseY, delta);
               }
@@ -639,11 +607,7 @@ jobs:
 
               @Override
               public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
-                  if (dragging) {
-                      ModConfig.INSTANCE.critX = (int) mouseX - this.dragX;
-                      ModConfig.INSTANCE.critY = (int) mouseY - this.dragY;
-                      return true;
-                  }
+                  if (dragging) { ModConfig.INSTANCE.critX = (int) mouseX - this.dragX; ModConfig.INSTANCE.critY = (int) mouseY - this.dragY; return true; }
                   return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
               }
 
@@ -658,8 +622,7 @@ jobs:
 
               private static class SliderWidget extends AbstractSliderButton {
                   private final java.util.function.LongConsumer onChange;
-                  private final String prefix;
-                  private final long min, max;
+                  private final String prefix; private final long min, max;
                   public SliderWidget(int x, int y, int w, int h, String prefix, long current, long min, long max, java.util.function.LongConsumer onChange) {
                       super(x, y, w, h, Component.empty(), (double) (current - min) / (max - min));
                       this.onChange = onChange; this.prefix = prefix; this.min = min; this.max = max; updateMessage();
