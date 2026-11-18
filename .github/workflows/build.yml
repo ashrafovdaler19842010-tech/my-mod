@@ -58,7 +58,7 @@ jobs:
 
       - uses: actions/setup-java@v4
         with:
-          java-version: '21' # Используем 21 версию (стабильная для 1.21)
+          java-version: '25' # <-- ИСПРАВЛЕНО ЗДЕСЬ
           distribution: 'temurin'
           
       - run: chmod +x gradlew && ./gradlew clean build
