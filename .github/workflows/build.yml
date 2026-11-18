@@ -21,17 +21,17 @@ jobs:
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
-            "id": "triggerbot",
+            "id": "custommod",
             "version": "1.0.0",
-            "name": "Trigger Bot",
-            "description": "Simple trigger bot for players only.",
+            "name": "Custom Mod",
+            "description": "Mod built from custom sources",
             "authors": ["You"],
             "contact": {},
             "license": "MIT",
             "environment": "client",
             "entrypoints": {
               "client": [
-                "com.example.client.TriggerBotClient"
+                "com.example.client.MainClient"
               ]
             },
             "depends": {
@@ -45,8 +45,8 @@ jobs:
 
           mkdir -p src/client/java/com/example/client
 
-          # --- ГЕНЕРАЦИЯ TriggerBotClient.java ---
-          cat << 'EOF' > src/client/java/com/example/client/TriggerBotClient.java
+          # --- ГЕНЕРАЦИЯ MainClient.java (Полный порт ZKillaura) ---
+          cat << 'EOF' > src/client/java/com/example/client/MainClient.java
           package com.example.client;
 
           import com.mojang.blaze3d.platform.InputConstants;
@@ -57,35 +57,66 @@ jobs:
           import net.minecraft.world.InteractionHand;
           import net.minecraft.world.entity.Entity;
           import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.item.AxeItem;
+          import net.minecraft.world.item.Item;
+          import net.minecraft.world.item.Items;
+          import net.minecraft.world.phys.EntityHitResult;
+          import net.minecraft.world.phys.HitResult;
           import org.lwjgl.glfw.GLFW;
 
-          public class TriggerBotClient implements ClientModInitializer {
-              // Настройки
+          public class MainClient implements ClientModInitializer {
+              // НАСТРОЙКИ
               public static boolean enabled = false;
-              public static boolean onlyCrits = true;
-              public static int delayMs = 50; // Задержка между ударами в мс
-              public static float range = 3.0f;
+              public static double range = 4.5;
+              public static boolean ignoreCreative = true;
+              
+              // OnFall (Криты)
+              public static int onFallMode = 1; // 0=None, 1=Value, 2=Random
+              public static float onFallValue = 0.25f;
+              public static float onFallMinRandom = 0.2f;
+              public static float onFallMaxRandom = 0.4f;
+              public static float randomOnFallFloat = 0;
 
+              // HitSpeed (Скорость удара)
+              public static int hitSpeedMode = 1; // 0=None, 1=Value, 2=Random
+              public static float hitSpeedValue = 0f;
+              public static float hitSpeedMinRandom = 0f;
+              public static float hitSpeedMaxRandom = 0f;
+              public static float randomHitSpeedFloat = 0;
+
+              // Shield (Щиты)
+              public static int shieldMode = 1; // 0=Ignore, 1=Break, 2=None
+              public static int swapDelayMode = 1; // 1=Value, 2=Random
+              public static int swapDelayValue = 2;
+              public static int hitDelayMode = 1;
+              public static int hitDelayValue = 2;
+              public static int swapBackDelayMode = 1;
+              public static int swapBackDelayValue = 2;
+
+              public static boolean swingHand = true;
+
+              // Стейт-машина
               private static boolean xKeyWasDown = false;
               private static boolean rCtrlWasDown = false;
-              private static long lastAttackTime = 0;
+              private static int shieldState = 0; // 0=Idle, 1=SwapAxe, 2=Attack, 3=SwapBack
+              private static int swapTimer = 0, hitTimer = 0, swapBackTimer = 0;
+              private static int originalSlot = -1;
 
               @Override
               public void onInitializeClient() {
                   ClientTickEvents.END_CLIENT_TICK.register(client -> {
                       if (client.player == null || client.getWindow() == null || client.level == null) return;
                       long win = client.getWindow().getWindow();
-                      long currentTime = System.currentTimeMillis();
 
-                      // Открытие меню (Right Ctrl)
+                      // Меню
                       boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
-                          if (client.screen instanceof TriggerBotScreen) client.setScreen(null);
-                          else if (client.screen == null) client.setScreen(new TriggerBotScreen());
+                          if (client.screen instanceof GuiScreen) client.setScreen(null);
+                          else if (client.screen == null) client.setScreen(new GuiScreen());
                       }
                       rCtrlWasDown = rCtrl;
 
-                      // Включение/Выключение (X)
+                      // Вкл/Выкл
                       boolean xDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_X);
                       if (xDown && !xKeyWasDown && client.screen == null) {
                           enabled = !enabled;
@@ -93,44 +124,129 @@ jobs:
                               client.player.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
                           } else {
                               client.player.playSound(SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
+                              resetShield();
                           }
                       }
                       xKeyWasDown = xDown;
 
                       if (!enabled || client.gameMode == null) return;
 
-                      // Получаем сущность, на которую смотрит игрок (как в Meteor)
-                      Entity target = client.crosshairPickEntity;
+                      // --- ЛОГИКА ИЗ ZKILLAURA ---
+                      
+                      // 1. Рейкаст (как MeteoristUtils.getCrosshairTarget)
+                      HitResult hitResult = client.player.pick(range, 1.0f, false);
+                      if (hitResult == null || hitResult.getType() != HitResult.Type.ENTITY) {
+                          resetShield();
+                          return;
+                      }
 
-                      if (target != null && target instanceof Player && target != client.player && target.isAlive()) {
-                          // Проверка дистанции
-                          if (client.player.distanceTo(target) > range) return;
+                      Entity entity = ((EntityHitResult) hitResult).getEntity();
 
-                          // Проверка на крит (если включено)
-                          if (onlyCrits) {
-                              if (client.player.onGround() || client.player.fallDistance <= 0.0f) {
-                                  return; // Не бьем, если не падаем
+                      // 2. Проверка на игрока (игнорим мобов)
+                      if (!(entity instanceof Player targetPlayer)) return;
+                      if (targetPlayer == client.player || targetPlayer.isDeadOrDying()) return;
+                      if (ignoreCreative && targetPlayer.isCreative()) return;
+
+                      // 3. Логика ломания щитов
+                      if (shieldMode == 1 && targetPlayer.isBlocking()) { // Break
+                          if (shieldState == 0) { // Idle
+                              int axeSlot = findAxeSlot(client.player);
+                              if (axeSlot != -1) {
+                                  shieldState = 1; // SwapAxe
+                                  swapTimer = calcDelay(swapDelayMode, swapDelayValue);
                               }
                           }
 
-                          // Проверка кулдауна атаки
-                          if (client.player.getAttackStrengthScale(0.5f) < 1.0f) return;
+                          if (shieldState == 1) { // SwapAxe
+                              if (swapTimer-- > 0) return;
+                              int axeSlot = findAxeSlot(client.player);
+                              if (axeSlot != -1 && targetPlayer.isBlocking()) {
+                                  originalSlot = client.player.getInventory().selected;
+                                  client.player.getInventory().selected = axeSlot;
+                                  shieldState = 2; // Attack
+                                  hitTimer = calcDelay(hitDelayMode, hitDelayValue);
+                              } else {
+                                  resetShield();
+                              }
+                          }
 
-                          // Проверка задержки (в мс)
-                          if (currentTime - lastAttackTime < delayMs) return;
+                          if (shieldState == 2) { // Attack
+                              if (hitTimer-- > 0) return;
+                              if (targetPlayer.isBlocking()) {
+                                  client.gameMode.attack(client.player, targetPlayer);
+                                  if (swingHand) client.player.swing(InteractionHand.MAIN_HAND);
+                                  shieldState = 3; // SwapBack
+                                  swapBackTimer = calcDelay(swapBackDelayMode, swapBackDelayValue);
+                              } else {
+                                  client.player.getInventory().selected = originalSlot;
+                                  resetShield();
+                              }
+                          }
 
-                          // БЬЕМ!
-                          client.gameMode.attack(client.player, target);
-                          client.player.swing(InteractionHand.MAIN_HAND);
-                          lastAttackTime = currentTime;
+                          if (shieldState == 3) { // SwapBack
+                              if (swapBackTimer-- > 0) return;
+                              if (originalSlot != client.player.getInventory().selected) {
+                                  client.player.getInventory().selected = originalSlot;
+                              }
+                              resetShield();
+                          }
+
+                          if (shieldState == 2 || shieldState == 3) return;
+                      }
+
+                      // 4. OnFall (Криты)
+                      if (onFallMode != 0) {
+                          float onFall = onFallMode == 1 ? onFallValue : randomOnFallFloat;
+                          if (!(client.player.fallDistance > onFall)) return;
+                      }
+
+                      // 5. HitSpeed (Задержка удара)
+                      if (hitSpeedMode != 0) {
+                          float hitSpeed = hitSpeedMode == 1 ? hitSpeedValue : randomHitSpeedFloat;
+                          if ((client.player.getAttackStrengthScale(hitSpeed) * 17.0F) < 16) return;
+                      }
+
+                      // 6. АТАКА
+                      client.gameMode.attack(client.player, targetPlayer);
+                      if (swingHand) client.player.swing(InteractionHand.MAIN_HAND);
+
+                      // Обновляем рандомные значения после удара
+                      if (onFallMode == 2) {
+                          randomOnFallFloat = onFallMinRandom + client.level.getRandom().nextFloat() * (onFallMaxRandom - onFallMinRandom);
+                      }
+                      if (hitSpeedMode == 2) {
+                          randomHitSpeedFloat = hitSpeedMinRandom + client.level.getRandom().nextFloat() * (hitSpeedMaxRandom - hitSpeedMinRandom);
                       }
                   });
+              }
+
+              private int findAxeSlot(Player player) {
+                  for (int i = 0; i < 9; i++) {
+                      Item item = player.getInventory().getItem(i).getItem();
+                      if (item instanceof AxeItem || item == Items.NETHERITE_AXE) {
+                          return i;
+                      }
+                  }
+                  return -1;
+              }
+
+              private int calcDelay(int mode, int value) {
+                  // Если mode == 2 (Random), но у нас нет минималки в этой простой версии, просто юзаем value
+                  return value;
+              }
+
+              private void resetShield() {
+                  shieldState = 0;
+                  swapTimer = 0;
+                  hitTimer = 0;
+                  swapBackTimer = 0;
+                  originalSlot = -1;
               }
           }
           EOF
 
-          # --- ГЕНЕРАЦИЯ TriggerBotScreen.java ---
-          cat << 'EOF' > src/client/java/com/example/client/TriggerBotScreen.java
+          # --- ГЕНЕРАЦИЯ GuiScreen.java ---
+          cat << 'EOF' > src/client/java/com/example/client/GuiScreen.java
           package com.example.client;
 
           import net.minecraft.client.gui.GuiGraphics;
@@ -138,41 +254,62 @@ jobs:
           import net.minecraft.client.gui.screens.Screen;
           import net.minecraft.network.chat.Component;
 
-          public class TriggerBotScreen extends Screen {
-              public TriggerBotScreen() { super(Component.literal("Trigger Bot Settings")); }
+          public class GuiScreen extends Screen {
+              public GuiScreen() { super(Component.literal("Trigger Bot Settings")); }
 
               @Override
               protected void init() {
-                  int x = width / 2 - 100;
-                  int y = height / 2 - 60;
+                  int x = width / 2 - 110;
+                  int y = height / 2 - 100;
 
-                  this.addRenderableWidget(Button.builder(Component.literal("Trigger Bot: " + (TriggerBotClient.enabled ? "§aON" : "§cOFF")), b -> {
-                      TriggerBotClient.enabled = !TriggerBotClient.enabled;
-                      b.setMessage(Component.literal("Trigger Bot: " + (TriggerBotClient.enabled ? "§aON" : "§cOFF")));
-                  }).bounds(x, y, 200, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal("TriggerBot: " + (MainClient.enabled ? "§aON" : "§cOFF")), b -> {
+                      MainClient.enabled = !MainClient.enabled;
+                      b.setMessage(Component.literal("TriggerBot: " + (MainClient.enabled ? "§aON" : "§cOFF")));
+                  }).bounds(x, y, 220, 20).build());
 
-                  this.addRenderableWidget(Button.builder(Component.literal("Only Crits: " + (TriggerBotClient.onlyCrits ? "§aON" : "§cOFF")), b -> {
-                      TriggerBotClient.onlyCrits = !TriggerBotClient.onlyCrits;
-                      b.setMessage(Component.literal("Only Crits: " + (TriggerBotClient.onlyCrits ? "§aON" : "§cOFF")));
-                  }).bounds(x, y + 25, 200, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal("OnFall Mode: " + getModeName(MainClient.onFallMode)), b -> {
+                      MainClient.onFallMode = (MainClient.onFallMode + 1) % 3;
+                      b.setMessage(Component.literal("OnFall Mode: " + getModeName(MainClient.onFallMode)));
+                  }).bounds(x, y + 25, 220, 20).build());
 
-                  this.addRenderableWidget(Button.builder(Component.literal("Delay: " + TriggerBotClient.delayMs + "ms"), b -> {
-                      TriggerBotClient.delayMs += 10;
-                      if (TriggerBotClient.delayMs > 200) TriggerBotClient.delayMs = 10;
-                      b.setMessage(Component.literal("Delay: " + TriggerBotClient.delayMs + "ms"));
-                  }).bounds(x, y + 50, 200, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal("HitSpeed Mode: " + getModeName(MainClient.hitSpeedMode)), b -> {
+                      MainClient.hitSpeedMode = (MainClient.hitSpeedMode + 1) % 3;
+                      b.setMessage(Component.literal("HitSpeed Mode: " + getModeName(MainClient.hitSpeedMode)));
+                  }).bounds(x, y + 50, 220, 20).build());
+
+                  this.addRenderableWidget(Button.builder(Component.literal("Shield Mode: " + getShieldName(MainClient.shieldMode)), b -> {
+                      MainClient.shieldMode = (MainClient.shieldMode + 1) % 3;
+                      b.setMessage(Component.literal("Shield Mode: " + getShieldName(MainClient.shieldMode)));
+                  }).bounds(x, y + 75, 220, 20).build());
                   
-                  this.addRenderableWidget(Button.builder(Component.literal("Range: " + TriggerBotClient.range), b -> {
-                      TriggerBotClient.range += 0.5f;
-                      if (TriggerBotClient.range > 6.0f) TriggerBotClient.range = 3.0f;
-                      b.setMessage(Component.literal("Range: " + TriggerBotClient.range));
-                  }).bounds(x, y + 75, 200, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal("Range: " + MainClient.range), b -> {
+                      MainClient.range += 0.5;
+                      if (MainClient.range > 6.0) MainClient.range = 3.0;
+                      b.setMessage(Component.literal("Range: " + MainClient.range));
+                  }).bounds(x, y + 100, 220, 20).build());
+
+                  this.addRenderableWidget(Button.builder(Component.literal("Ignore Creative: " + (MainClient.ignoreCreative ? "§aON" : "§cOFF")), b -> {
+                      MainClient.ignoreCreative = !MainClient.ignoreCreative;
+                      b.setMessage(Component.literal("Ignore Creative: " + (MainClient.ignoreCreative ? "§aON" : "§cOFF")));
+                  }).bounds(x, y + 125, 220, 20).build());
+              }
+
+              private String getModeName(int mode) {
+                  if (mode == 0) return "§cNone";
+                  if (mode == 1) return "§aValue";
+                  return "§eRandom";
+              }
+              
+              private String getShieldName(int mode) {
+                  if (mode == 0) return "§cIgnore";
+                  if (mode == 1) return "§aBreak";
+                  return "§eNone";
               }
 
               @Override
               public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
                   this.renderBackground(context, mouseX, mouseY, delta);
-                  context.drawCenteredString(this.font, "§l§bTrigger Bot Menu", this.width / 2, this.height / 2 - 80, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§l§bTrigger Bot", this.width / 2, this.height / 2 - 120, 0xFFFFFF);
                   super.render(context, mouseX, mouseY, delta);
               }
               
