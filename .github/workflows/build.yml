@@ -10,16 +10,20 @@ jobs:
       - run: unzip -o mod.zip || true
       - name: Build Mod Sources
         run: |
-          rm -f build/libs/*.jar
-          
-          sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
-          sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
-
+          # 1. ПОЛНАЯ ОЧИСТКА СТАРЫХ ФАЙЛОВ И КЭША
+          rm -rf build/
           rm -f src/main/resources/template-mod.mixins.json
           rm -f src/main/resources/template-mod.client.mixins.json
           rm -f src/client/resources/template-mod.mixins.json
           rm -f src/client/resources/template-mod.client.mixins.json
+          rm -f src/main/resources/*.accesswidener
+          rm -f src/client/resources/*.accesswidener
 
+          # 2. ПОНИЖАЕМ ТРЕБОВАНИЯ К FABRIC LOADER
+          sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
+          sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
+
+          # 3. ПОЛНОСТЬЮ ПЕРЕСОЗДАЕМ fabric.mod.json (с явным указанием путей)
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
@@ -49,6 +53,13 @@ jobs:
           }
           EOF
 
+          # 4. СОЗДАЕМ ЕДИНСТВЕННЫЙ ЧИСТЫЙ ФАЙЛ ACCESS WIDENER
+          cat << 'EOF' > src/main/resources/template-mod.accesswidener
+          accessWidener v2 named
+          accessible field net/minecraft/world/entity/LivingEntity noJumpDelay I
+          EOF
+
+          # 5. СОЗДАЕМ КОНФИГ МИКСИНОВ
           cat << 'EOF' > src/main/resources/template-mod.mixins.json
           {
             "required": true,
@@ -65,11 +76,7 @@ jobs:
           }
           EOF
 
-          cat << 'EOF' > src/main/resources/template-mod.accesswidener
-          accessWidener v2 named
-          accessible field net/minecraft/world/entity/LivingEntity noJumpDelay I
-          EOF
-
+          # 6. НАСТРАИВАЕМ build.gradle (гарантируем, что Loom видит файл)
           if ! grep -q "accessWidenerPath" build.gradle; then
             echo "" >> build.gradle
             echo "loom {" >> build.gradle
@@ -89,6 +96,7 @@ jobs:
 
           echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
 
+          # 7. ОЧИЩАЕМ JAVA-КЛАССЫ И СОЗДАЕМ НОВЫЕ
           rm -rf src/client/java/com/example/client/*
           mkdir -p src/client/java/com/example/client/mixin
           
@@ -124,7 +132,7 @@ jobs:
           }
           EOF
 
-          # MIXIN: BLINK (НЕ ТРОНУТ, ФЛАГИ НА МЕСТЕ)
+          # MIXIN: BLINK (ФЛАГИ НА МЕСТЕ)
           cat << 'EOF' > src/client/java/com/example/client/mixin/ConnectionMixin.java
           package com.example.client.mixin;
 
@@ -179,7 +187,7 @@ jobs:
           }
           EOF
 
-          # MIXIN: HEAD-HITTING & SPIDER (НЕ ТРОНУТ)
+          # MIXIN: HEAD-HITTING & SPIDER
           cat << 'EOF' > src/client/java/com/example/client/mixin/LivingEntityMixin.java
           package com.example.client.mixin;
 
@@ -258,29 +266,24 @@ jobs:
                           }
                       }
                       else if (GrimConfig.INSTANCE.mode == 4) { 
-                          // ФЛАГОВЫЙ FLY (DESYNC HOVER)
-                          // Мы говорим серверу, что мы на земле (onGround = true), даже если мы в воздухе.
-                          // Grim видит, что мы не падаем, и думает, что под нами блок.
                           if (!client.player.onGround()) {
                               client.player.setOnGround(true);
-                              // Обнуляем падение (Y = 0), чтобы мы зависли
                               client.player.setDeltaMovement(new Vec3(
                                   client.player.getDeltaMovement().x,
                                   0.0,
                                   client.player.getDeltaMovement().z
                               ));
                               
-                              // Если жмем пробел - летим вверх, если шифт - вниз
                               if (client.options.keyJump.isDown()) {
                                   client.player.setDeltaMovement(new Vec3(
                                       client.player.getDeltaMovement().x,
-                                      0.1, // Медленный подъем
+                                      0.1,
                                       client.player.getDeltaMovement().z
                                   ));
                               } else if (client.options.keyShift.isDown()) {
                                   client.player.setDeltaMovement(new Vec3(
                                       client.player.getDeltaMovement().x,
-                                      -0.1, // Медленный спуск
+                                      -0.1,
                                       client.player.getDeltaMovement().z
                                   ));
                               }
@@ -348,4 +351,4 @@ jobs:
           name: gotoviy-mod
           path: | 
             build/libs/*.jar
-            !build/libs*-sources.jar
+            !build/libs/*-sources.jar
