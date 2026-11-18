@@ -124,7 +124,7 @@ jobs:
           }
           EOF
 
-          # MIXIN: BLINK (НЕ ТРОНУТ)
+          # MIXIN: BLINK
           cat << 'EOF' > src/client/java/com/example/client/mixin/ConnectionMixin.java
           package com.example.client.mixin;
 
@@ -150,7 +150,7 @@ jobs:
               private void onSend(Packet<?> packet, CallbackInfo ci) {
                   if (flushing) return;
 
-                  // Блокируем только для режимов Blink
+                  // Блокируем движение только для Blink-режимов
                   if (GrimConfig.INSTANCE.enabled && (GrimConfig.INSTANCE.mode == 0 || GrimConfig.INSTANCE.mode == 1)) {
                       if (packet instanceof ServerboundMovePlayerPacket) {
                           buffer.add(packet);
@@ -180,7 +180,7 @@ jobs:
           }
           EOF
 
-          # MIXIN: HEAD-HITTING & SPIDER
+          # MIXIN: LIVING ENTITY
           cat << 'EOF' > src/client/java/com/example/client/mixin/LivingEntityMixin.java
           package com.example.client.mixin;
 
@@ -195,14 +195,16 @@ jobs:
           public class LivingEntityMixin {
               @Inject(method = "aiStep", at = @At("HEAD"))
               private void onAiStep(CallbackInfo ci) {
-                  if (GrimConfig.INSTANCE.enabled && (GrimConfig.INSTANCE.mode == 2 || GrimConfig.INSTANCE.mode == 3)) {
-                      ((LivingEntity)(Object)this).noJumpDelay = 0;
+                  if (GrimConfig.INSTANCE.enabled) {
+                      if (GrimConfig.INSTANCE.mode == 2 || GrimConfig.INSTANCE.mode == 3) {
+                          ((LivingEntity)(Object)this).noJumpDelay = 0;
+                      }
                   }
               }
           }
           EOF
 
-          # ГЛАВНЫЙ КЛАСС (Ghost Fly)
+          # ГЛАВНЫЙ КЛАСС
           cat << 'EOF' > src/client/java/com/example/client/GrimBypassClient.java
           package com.example.client;
 
@@ -245,13 +247,14 @@ jobs:
 
                       if (!GrimConfig.INSTANCE.enabled || client.screen != null) return;
 
+                      // ИСПРАВЛЕНО: убраны скобки у horizontalCollision
                       if (GrimConfig.INSTANCE.mode == 2) { 
                           if (client.level.getBlockState(client.player.blockPosition().above(2)).isSolid() && client.player.onGround()) {
                               client.player.jumpFromGround();
                           }
                       } 
                       else if (GrimConfig.INSTANCE.mode == 3) { 
-                          if (client.player.horizontalCollision && client.options.keyJump.isDown()) {
+                          if (client.player.horizontalCollision && client.options.keyJump.isDown()) { // ИСПРАВЛЕНО ЗДЕСЬ
                               if (client.player.onGround()) {
                                   client.player.jumpFromGround();
                               } else {
@@ -262,27 +265,50 @@ jobs:
                           }
                       }
                       else if (GrimConfig.INSTANCE.mode == 4) { 
-                          // GHOST FLY (INERTIA) - Копим инерцию и летаем
+                          // GHOST FLY (INERTIA)
                           if (client.options.keyJump.isDown()) {
-                              // Даем ускорение вверх
                               client.player.setDeltaMovement(client.player.getDeltaMovement().add(0, 0.15, 0));
                           } else if (client.options.keyShift.isDown()) {
-                              // Опускаемся
                               client.player.setDeltaMovement(client.player.getDeltaMovement().add(0, -0.15, 0));
                           } else {
-                              // Зависаем (гасим падение)
                               client.player.setDeltaMovement(client.player.getDeltaMovement().multiply(1, 0, 1));
                           }
 
-                          // Каждые 15 тиков сбрасываем таймер падения (NoFall)
+                          // ИСПРАВЛЕНО: убрано isHorizontalCollision(), отправляем только onGround = true
                           if (tickTimer % 15 == 0) {
                               client.player.connection.send(new ServerboundMovePlayerPacket.Pos(
                                   client.player.getX(),
                                   client.player.getY(),
                                   client.player.getZ(),
-                                  true, // Говорим серверу, что мы на земле (Ghost Block)
-                                  client.player.isHorizontalCollision()
+                                  true, // Говорим серверу, что мы на земле
+                                  false // Хитбокс не меняется
                               ));
+                          }
+                      }
+                      else if (GrimConfig.INSTANCE.mode == 5) { 
+                          // ENTITY FLY (Идея 2)
+                          boolean nearEntity = !client.level.getEntities(client.player, client.player.getBoundingBox().inflate(4.0)).isEmpty();
+                          if (nearEntity) {
+                              // Если рядом есть моб/лошадь/лодка - включаем Ghost Fly
+                              if (client.options.keyJump.isDown()) {
+                                  client.player.setDeltaMovement(client.player.getDeltaMovement().add(0, 0.12, 0));
+                              } else {
+                                  client.player.setDeltaMovement(client.player.getDeltaMovement().multiply(1, 0, 1));
+                              }
+                              if (tickTimer % 10 == 0) {
+                                  client.player.connection.send(new ServerboundMovePlayerPacket.Pos(
+                                      client.player.getX(), client.player.getY(), client.player.getZ(), true, false
+                                  ));
+                              }
+                          }
+                      }
+                      else if (GrimConfig.INSTANCE.mode == 6) { 
+                          // NO-SLOW (Идея 3)
+                          // Если мы едим или пьем зелье, возвращаем скорость
+                          if (client.player.isUsingItem()) {
+                              // Grim видит, что мы едим, но мы компенсируем замедление
+                              Vec3 currentSpeed = client.player.getDeltaMovement();
+                              client.player.setDeltaMovement(currentSpeed.x * 1.3, currentSpeed.y, currentSpeed.z * 1.3);
                           }
                       }
                   });
@@ -306,16 +332,18 @@ jobs:
               protected void init() {
                   this.clearWidgets();
                   int x = this.width / 2 - 120;
-                  int y = this.height / 2 - 80;
+                  int y = this.height / 2 - 90;
                   String[] names = {
                       "Blink 150ms (Safe)",
                       "Blink 300ms (Risky)",
                       "Head-Hitting (Auto)",
                       "Spider (Wall Climb)",
-                      "Ghost Fly (Inertia)"
+                      "Ghost Fly (Inertia)",
+                      "Entity Fly (Near Mob)",
+                      "No-Slow (Eating)"
                   };
 
-                  for (int i = 0; i < 5; i++) {
+                  for (int i = 0; i < 7; i++) {
                       final int mode = i;
                       String btnText = (GrimConfig.INSTANCE.mode == i ? "§a" : "§7") + names[i];
                       this.addRenderableWidget(Button.builder(Component.literal(btnText), b -> {
@@ -329,8 +357,8 @@ jobs:
               @Override
               public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
                   this.renderBackground(context, mouseX, mouseY, delta);
-                  context.drawCenteredString(this.font, "§l§bGrim/Polar Bypasses", this.width / 2, this.height / 2 - 100, 0xFFFFFF);
-                  context.drawCenteredString(this.font, "§7Status: " + (GrimConfig.INSTANCE.enabled ? "§aENABLED" : "§cDISABLED"), this.width / 2, this.height / 2 - 85, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§l§bGrim/Polar Bypasses", this.width / 2, this.height / 2 - 110, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§7Status: " + (GrimConfig.INSTANCE.enabled ? "§aENABLED" : "§cDISABLED"), this.width / 2, this.height / 2 - 95, 0xFFFFFF);
                   super.render(context, mouseX, mouseY, delta);
               }
 
