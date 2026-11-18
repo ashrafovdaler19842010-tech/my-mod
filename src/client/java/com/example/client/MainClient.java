@@ -15,7 +15,7 @@ jobs:
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
 
-          # УДАЛЯЕМ ВСЕ ЛИШНИЕ ФАЙЛЫ ИЗ ШАБЛОНА
+          # ЖЕСТКОЕ УДАЛЕНИЕ СТАРЫХ ФАЙЛОВ ШАБЛОНА
           rm -f src/client/java/com/example/client/TemplateModClient.java
           rm -f src/client/java/com/example/client/SprintResetClient.java
           rm -f src/client/java/com/example/client/SprintResetScreen.java
@@ -23,7 +23,6 @@ jobs:
           rm -f src/main/resources/*.mixins.json
           rm -f src/client/resources/*.mixins.json
 
-          # СОЗДАЕМ fabric.mod.json
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
