@@ -11,15 +11,33 @@ jobs:
       - name: Build Mod Sources
         run: |
           sed -i 's/"fabricloader": "[^"]*"/"fabricloader": ">=0.16.0"/g' src/main/resources/fabric.mod.json
-          sed -i 's/com.example.client.TemplateModClient/com.example.client.NetworkBypassClient/g' src/main/resources/fabric.mod.json
+          sed -i 's/com.example.client.TemplateModClient/com.example.client.GrimBypassClient/g' src/main/resources/fabric.mod.json
           
-          cat << 'EOF' > src/client/resources/template-mod.client.mixins.json
+          # Access Widener (Для noJumpDelay)
+          cat << 'EOF' > src/main/resources/template-mod.accesswidener
+          accessWidener v2 named
+          accessible field net/minecraft/world/entity/LivingEntity noJumpDelay I
+          EOF
+          
+          if ! grep -q "accessWidener" src/main/resources/fabric.mod.json; then
+            sed -i 's/"entrypoints": {/"accessWidener": "template-mod.accesswidener",\n  "entrypoints": {/g' src/main/resources/fabric.mod.json
+          fi
+          
+          if ! grep -q "accessWidenerPath" build.gradle; then
+            sed -i '1s/^/loom { accessWidenerPath = file("src\/main\/resources\/template-mod.accesswidener") }\n/' build.gradle
+          fi
+
+          # Миксины
+          cat << 'EOF' > src/client/resources/template-mod.mixins.json
           {
             "required": true,
             "minVersion": "0.8",
             "package": "com.example.client.mixin",
             "compatibilityLevel": "JAVA_21",
-            "client": [],
+            "client": [
+              "ConnectionMixin",
+              "LivingEntityMixin"
+            ],
             "injectors": {
               "defaultRequire": 1
             }
@@ -29,10 +47,10 @@ jobs:
           echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
 
           rm -rf src/client/java/com/example/client/*
-          mkdir -p src/client/java/com/example/client
+          mkdir -p src/client/java/com/example/client/mixin
           
           # КОНФИГ
-          cat << 'EOF' > src/client/java/com/example/client/BypassConfig.java
+          cat << 'EOF' > src/client/java/com/example/client/GrimConfig.java
           package com.example.client;
 
           import com.google.gson.Gson;
@@ -42,12 +60,12 @@ jobs:
           import java.io.FileReader;
           import java.io.FileWriter;
 
-          public class BypassConfig {
-              private static final File FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "network-bypass.json");
+          public class GrimConfig {
+              private static final File FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "grim-bypass.json");
               public int mode = 0; 
               public boolean enabled = false;
 
-              public static BypassConfig INSTANCE = new BypassConfig();
+              public static GrimConfig INSTANCE = new GrimConfig();
 
               public static void save() {
                   try (FileWriter w = new FileWriter(FILE)) { new GsonBuilder().setPrettyPrinting().create().toJson(INSTANCE, w); } catch (Exception ignored) {}
@@ -55,7 +73,7 @@ jobs:
               public static void load() {
                   if (FILE.exists()) {
                       try (FileReader r = new FileReader(FILE)) {
-                          BypassConfig l = new Gson().fromJson(r, BypassConfig.class);
+                          GrimConfig l = new Gson().fromJson(r, GrimConfig.class);
                           if (l != null) INSTANCE = l;
                       } catch (Exception ignored) {}
                   }
@@ -63,128 +81,146 @@ jobs:
           }
           EOF
 
-          # ЛОГИКА ОБХОДОВ
-          cat << 'EOF' > src/client/java/com/example/client/NetworkBypassClient.java
+          # MIXIN: BLINK (Буферизация пакетов)
+          cat << 'EOF' > src/client/java/com/example/client/mixin/ConnectionMixin.java
+          package com.example.client.mixin;
+
+          import com.example.client.GrimConfig;
+          import net.minecraft.network.Connection;
+          import net.minecraft.network.protocol.Packet;
+          import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+          import java.util.ArrayList;
+          import java.util.List;
+
+          @Mixin(Connection.class)
+          public class ConnectionMixin {
+              private static final List<Packet<?>> buffer = new ArrayList<>();
+              private static int packetCount = 0;
+              private static long lastFlush = 0;
+
+              @Inject(method = "send(Lnet/minecraft/network/protocol/Packet;)V", at = @At("HEAD"), cancellable = true)
+              private void onSend(Packet<?> packet, CallbackInfo ci) {
+                  // Режимы 0 и 1 (Blink)
+                  if (GrimConfig.INSTANCE.enabled && (GrimConfig.INSTANCE.mode == 0 || GrimConfig.INSTANCE.mode == 1)) {
+                      if (packet instanceof ServerboundMovePlayerPacket) {
+                          buffer.add(packet);
+                          packetCount++;
+                          
+                          // Лимит буфера: 3 тика (150мс) или 5 тиков (250мс) в зависимости от режима
+                          int limit = GrimConfig.INSTANCE.mode == 0 ? 3 : 6;
+                          
+                          if (packetCount >= limit) {
+                              // Выпускаем пачку (Grim обработает их по очереди)
+                              for (Packet<?> p : buffer) {
+                                  ((Connection)(Object)this).send(p);
+                              }
+                              buffer.clear();
+                              packetCount = 0;
+                          }
+                          ci.cancel(); // Отменяем одиночную отправку
+                      }
+                  } else if (!buffer.isEmpty()) {
+                      // Если Blink выключили, сбрасываем остатки
+                      for (Packet<?> p : buffer) ((Connection)(Object)this).send(p);
+                      buffer.clear();
+                      packetCount = 0;
+                  }
+              }
+          }
+          EOF
+
+          # MIXIN: HEAD-HITTING (Сброс задержки прыжка)
+          cat << 'EOF' > src/client/java/com/example/client/mixin/LivingEntityMixin.java
+          package com.example.client.mixin;
+
+          import com.example.client.GrimConfig;
+          import net.minecraft.world.entity.LivingEntity;
+          import net.minecraft.world.entity.player.Player;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+          @Mixin(LivingEntity.class)
+          public class LivingEntityMixin {
+              @Inject(method = "aiStep", at = @At("HEAD"))
+              private void onAiStep(CallbackInfo ci) {
+                  if (GrimConfig.INSTANCE.enabled && (GrimConfig.INSTANCE.mode == 2 || GrimConfig.INSTANCE.mode == 3)) {
+                      if ((Object)this instanceof Player player) {
+                          // Обнуляем задержку прыжка для Head-Hitting и Spider
+                          player.noJumpDelay = 0;
+                      }
+                  }
+              }
+          }
+          EOF
+
+          # ГЛАВНЫЙ КЛАСС
+          cat << 'EOF' > src/client/java/com/example/client/GrimBypassClient.java
           package com.example.client;
 
           import com.mojang.blaze3d.platform.InputConstants;
           import net.fabricmc.api.ClientModInitializer;
           import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
           import net.minecraft.client.Minecraft;
-          import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
-          import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
-          import net.minecraft.network.protocol.game.ServerboundMoveVehiclePacket;
           import net.minecraft.sounds.SoundEvents;
-          import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
 
-          import java.util.ArrayDeque;
-          import java.util.Queue;
-
-          public class NetworkBypassClient implements ClientModInitializer {
+          public class GrimBypassClient implements ClientModInitializer {
               private static boolean xKeyWasDown = false;
               private static boolean rCtrlWasDown = false;
-              
-              // Для Blink и Timer
-              private static int timerBalance = 0;
-              private static int tickCounter = 0;
-              private static Queue<Vec3> blinkQueue = new ArrayDeque<>();
+              private static int tickTimer = 0;
 
               @Override
               public void onInitializeClient() {
-                  BypassConfig.load();
+                  GrimConfig.load();
 
                   ClientTickEvents.END_CLIENT_TICK.register(client -> {
                       if (client.player == null || client.getWindow() == null) return;
                       long win = client.getWindow().getWindow();
-                      tickCounter++;
+                      tickTimer++;
 
-                      // Меню
+                      // Right Ctrl - Меню
                       boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
-                          if (client.screen instanceof NetworkBypassScreen) client.setScreen(null);
-                          else if (client.screen == null) client.setScreen(new NetworkBypassScreen());
+                          if (client.screen instanceof GrimScreen) client.setScreen(null);
+                          else if (client.screen == null) client.setScreen(new GrimScreen());
                       }
                       rCtrlWasDown = rCtrl;
 
                       // X - Вкл/Выкл
                       boolean xDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_X);
                       if (xDown && !xKeyWasDown && client.screen == null) {
-                          BypassConfig.INSTANCE.enabled = !BypassConfig.INSTANCE.enabled;
-                          client.player.playSound(BypassConfig.INSTANCE.enabled ? SoundEvents.EXPERIENCE_ORB_PICKUP : SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
-                          BypassConfig.save();
-                          
-                          // Сброс таймеров при выключении
-                          if (!BypassConfig.INSTANCE.enabled) {
-                              client.timer.msPerTick = 50.0f;
-                              blinkQueue.clear();
-                              timerBalance = 0;
-                          }
+                          GrimConfig.INSTANCE.enabled = !GrimConfig.INSTANCE.enabled;
+                          client.player.playSound(GrimConfig.INSTANCE.enabled ? SoundEvents.EXPERIENCE_ORB_PICKUP : SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
+                          GrimConfig.save();
                       }
                       xKeyWasDown = xDown;
 
-                      if (!BypassConfig.INSTANCE.enabled || client.screen != null) return;
+                      if (!GrimConfig.INSTANCE.enabled || client.screen != null) return;
 
-                      // Логика методов
-                      switch (BypassConfig.INSTANCE.mode) {
-                          case 0: // Timer Balance (Grim bypass)
-                              // Накапливаем баланс, замедляясь, потом тратим его
-                              if (timerBalance < 20) {
-                                  client.timer.msPerTick = 60.0f; // Замедление
-                                  timerBalance++;
-                              } else {
-                                  client.timer.msPerTick = 33.3f; // Ускорение
-                                  timerBalance--;
+                      // Логика Head-Hitting (Режим 2)
+                      if (GrimConfig.INSTANCE.mode == 2) {
+                          // Если над головой блок (2 блока вверх)
+                          if (client.level.getBlockState(client.player.blockPosition().above(2)).isSolid() && client.player.onGround()) {
+                              // Дискретное нажатие (симуляция отпускания и нажатия)
+                              client.options.keyJump.setDown(false);
+                              if (tickTimer % 2 == 0) {
+                                  client.options.keyJump.setDown(true);
                               }
-                              break;
-
-                          case 1: // Elytra Desync (Race Condition)
-                              if (tickCounter % 5 == 0) {
-                                  // Отправляем пакет полета
-                                  client.player.connection.send(new ServerboundPlayerCommandPacket(client.player, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING));
-                                  // Сразу отправляем пакет "я на земле"
-                                  client.player.connection.send(new ServerboundMovePlayerPacket.Pos(client.player.getX(), client.player.getY() - 0.1, client.player.getZ(), true, false));
-                              }
-                              break;
-
-                          case 2: // Head Hitting (2-block ceiling)
-                              if (client.level.getBlockState(client.player.blockPosition().above(2)).isSolid() && client.player.onGround()) {
-                                  client.player.jumpFromGround();
-                              }
-                              break;
-
-                          case 3: // Blink (Ping Spoof)
-                              // Сохраняем пакеты 3 тика
-                              if (tickCounter % 3 == 0) {
-                                  if (blinkQueue.size() < 3) {
-                                      blinkQueue.add(client.player.position());
-                                      // Останавливаем клиент на месте (визуально)
-                                      client.player.setDeltaMovement(0, client.player.getDeltaMovement().y, 0);
-                                  } else {
-                                      // Выпускаем накопленное (телепорт)
-                                      while (!blinkQueue.isEmpty()) {
-                                          Vec3 pos = blinkQueue.poll();
-                                          client.player.connection.send(new ServerboundMovePlayerPacket.Pos(pos.x, pos.y, pos.z, client.player.onGround(), false));
-                                      }
-                                  }
-                              }
-                              break;
-
-                          case 4: // Vehicle Spoof (Boat/Lava)
-                              if (client.player.getVehicle() != null && client.player.getVehicle().isControlledByLocalInstance()) {
-                                  // Отправляем серверу пакет, что лодка едет быстрее
-                                  Vec3 mot = client.player.getVehicle().getDeltaMovement();
-                                  client.player.connection.send(new ServerboundMoveVehiclePacket(client.player.getVehicle().position().add(mot.scale(1.5)), client.player.getVehicle().getYRot(), client.player.getVehicle().getXRot(), false));
-                              }
-                              break;
-
-                          case 5: // Diagonal AABB Strafe
-                              if (client.player.onGround() && client.options.keyUp.isDown()) {
-                                  // Принудительный прыжок под углом 45 градусов
-                                  client.player.setYRot(client.player.getYRot() % 45); 
-                                  client.player.jumpFromGround();
-                              }
-                              break;
+                          }
+                      } 
+                      // Spider (Режим 3)
+                      else if (GrimConfig.INSTANCE.mode == 3) {
+                          if (client.player.horizontalCollision && client.options.keyJump.isDown()) {
+                              // Спамим прыжком только когда жмем пробел у стены
+                              if (tickTimer % 3 == 0) client.player.jumpFromGround();
+                          }
                       }
                   });
               }
@@ -192,7 +228,7 @@ jobs:
           EOF
 
           # МЕНЮ
-          cat << 'EOF' > src/client/java/com/example/client/NetworkBypassScreen.java
+          cat << 'EOF' > src/client/java/com/example/client/GrimScreen.java
           package com.example.client;
 
           import net.minecraft.client.gui.GuiGraphics;
@@ -200,29 +236,27 @@ jobs:
           import net.minecraft.client.gui.screens.Screen;
           import net.minecraft.network.chat.Component;
 
-          public class NetworkBypassScreen extends Screen {
-              public NetworkBypassScreen() { super(Component.literal("Network Bypasses")); }
+          public class GrimScreen extends Screen {
+              public GrimScreen() { super(Component.literal("Grim Bypasses")); }
 
               @Override
               protected void init() {
                   this.clearWidgets();
                   int x = this.width / 2 - 120;
-                  int y = this.height / 2 - 80;
+                  int y = this.height / 2 - 70;
                   String[] names = {
-                      "Timer Balance (Grim)",
-                      "Elytra Desync",
-                      "Head Hitting",
-                      "Blink (Ping Spoof)",
-                      "Vehicle Spoof",
-                      "Diagonal Strafe"
+                      "Blink 150ms (Safe)",
+                      "Blink 300ms (Risky)",
+                      "Head-Hitting (Auto)",
+                      "Spider (Wall Climb)"
                   };
 
-                  for (int i = 0; i < 6; i++) {
+                  for (int i = 0; i < 4; i++) {
                       final int mode = i;
-                      String btnText = (BypassConfig.INSTANCE.mode == i ? "§a" : "§7") + names[i];
+                      String btnText = (GrimConfig.INSTANCE.mode == i ? "§a" : "§7") + names[i];
                       this.addRenderableWidget(Button.builder(Component.literal(btnText), b -> {
-                          BypassConfig.INSTANCE.mode = mode;
-                          BypassConfig.save();
+                          GrimConfig.INSTANCE.mode = mode;
+                          GrimConfig.save();
                           this.init();
                       }).bounds(x, y + (i * 25), 240, 20).build());
                   }
@@ -231,8 +265,8 @@ jobs:
               @Override
               public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
                   this.renderBackground(context, mouseX, mouseY, delta);
-                  context.drawCenteredString(this.font, "§l§bNetwork Desync Bypasses", this.width / 2, this.height / 2 - 100, 0xFFFFFF);
-                  context.drawCenteredString(this.font, "§7Status: " + (BypassConfig.INSTANCE.enabled ? "§aENABLED" : "§cDISABLED"), this.width / 2, this.height / 2 - 85, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§l§bGrim/Polar Bypasses", this.width / 2, this.height / 2 - 90, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§7Status: " + (GrimConfig.INSTANCE.enabled ? "§aENABLED" : "§cDISABLED"), this.width / 2, this.height / 2 - 75, 0xFFFFFF);
                   super.render(context, mouseX, mouseY, delta);
               }
 
