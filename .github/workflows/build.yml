@@ -10,36 +10,37 @@ jobs:
       - run: unzip -o mod.zip || true
       - name: Build Mod Sources
         run: |
+          # 1. ПОЛНАЯ ОЧИСТКА СТАРЫХ ФАЙЛОВ
           rm -rf build/
-          rm -f src/main/resources/template-mod.mixins.json
-          rm -f src/main/resources/template-mod.client.mixins.json
-          rm -f src/client/resources/template-mod.mixins.json
-          rm -f src/client/resources/template-mod.client.mixins.json
+          rm -f src/main/resources/*.mixins.json
           rm -f src/main/resources/*.accesswidener
+          rm -f src/client/resources/*.mixins.json
+          rm -f src/client/resources/*.accesswidener
+          
+          # Удаляем старые джава-классы
+          rm -rf src/client/java/com/example/client/*
 
+          # 2. НАСТРАИВАЕМ ВЕРСИИ (чтобы не было ошибок совместимости)
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
 
+          # 3. ПЕРЕСОЗДАЕМ fabric.mod.json (без упоминания миксинов)
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
-            "id": "template-mod",
+            "id": "noslow",
             "version": "1.0.0",
-            "name": "Grim Bypass",
-            "description": "Bypasses",
+            "name": "NoSlow Only",
+            "description": "J - toggle",
             "authors": ["You"],
             "contact": {},
             "license": "MIT",
             "environment": "client",
             "entrypoints": {
               "client": [
-                "com.example.client.GrimBypassClient"
+                "com.example.client.NoSlowClient"
               ]
             },
-            "mixins": [
-              "template-mod.mixins.json"
-            ],
-            "accessWidener": "template-mod.accesswidener",
             "depends": {
               "fabricloader": ">=0.16.0",
               "minecraft": "~1.21",
@@ -49,34 +50,7 @@ jobs:
           }
           EOF
 
-          cat << 'EOF' > src/main/resources/template-mod.accesswidener
-          accessWidener v2 named
-          accessible field net/minecraft/world/entity/LivingEntity noJumpDelay I
-          EOF
-
-          cat << 'EOF' > src/main/resources/template-mod.mixins.json
-          {
-            "required": true,
-            "minVersion": "0.8",
-            "package": "com.example.client.mixin",
-            "compatibilityLevel": "JAVA_21",
-            "client": [
-              "ConnectionMixin",
-              "LivingEntityMixin"
-            ],
-            "injectors": {
-              "defaultRequire": 1
-            }
-          }
-          EOF
-
-          if ! grep -q "accessWidenerPath" build.gradle; then
-            echo "" >> build.gradle
-            echo "loom {" >> build.gradle
-            echo "    accessWidenerPath = file(\"src/main/resources/template-mod.accesswidener\")" >> build.gradle
-            echo "}" >> build.gradle
-          fi
-
+          # 4. НАСТРАИВАЕМ build.gradle (только защита от дубликатов)
           if ! grep -q "duplicatesStrategy" build.gradle; then
             echo "" >> build.gradle
             echo "tasks.named('jar') {" >> build.gradle
@@ -89,274 +63,58 @@ jobs:
 
           echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
 
-          rm -rf src/client/java/com/example/client/*
-          mkdir -p src/client/java/com/example/client/mixin
+          # 5. СОЗДАЕМ ЕДИНСТВЕННЫЙ КЛАСС (БЕЗ ГУИ, ТОЛЬКО ЛОГИКА)
+          mkdir -p src/client/java/com/example/client
           
-          # КОНФИГ
-          cat << 'EOF' > src/client/java/com/example/client/GrimConfig.java
-          package com.example.client;
-
-          import com.google.gson.Gson;
-          import com.google.gson.GsonBuilder;
-          import net.fabricmc.loader.api.FabricLoader;
-          import java.io.File;
-          import java.io.FileReader;
-          import java.io.FileWriter;
-
-          public class GrimConfig {
-              private static final File FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "grim-bypass.json");
-              public int mode = 0; 
-              public boolean enabled = false;
-
-              public static GrimConfig INSTANCE = new GrimConfig();
-
-              public static void save() {
-                  try (FileWriter w = new FileWriter(FILE)) { new GsonBuilder().setPrettyPrinting().create().toJson(INSTANCE, w); } catch (Exception ignored) {}
-              }
-              public static void load() {
-                  if (FILE.exists()) {
-                      try (FileReader r = new FileReader(FILE)) {
-                          GrimConfig l = new Gson().fromJson(r, GrimConfig.class);
-                          if (l != null) INSTANCE = l;
-                      } catch (Exception ignored) {}
-                  }
-              }
-          }
-          EOF
-
-          # MIXIN: BLINK
-          cat << 'EOF' > src/client/java/com/example/client/mixin/ConnectionMixin.java
-          package com.example.client.mixin;
-
-          import com.example.client.GrimConfig;
-          import net.minecraft.network.Connection;
-          import net.minecraft.network.protocol.Packet;
-          import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
-          import org.spongepowered.asm.mixin.Mixin;
-          import org.spongepowered.asm.mixin.injection.At;
-          import org.spongepowered.asm.mixin.injection.Inject;
-          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-
-          import java.util.ArrayList;
-          import java.util.List;
-
-          @Mixin(Connection.class)
-          public class ConnectionMixin {
-              private static final List<Packet<?>> buffer = new ArrayList<>();
-              private static int packetCount = 0;
-              private static boolean flushing = false; 
-
-              @Inject(method = "send(Lnet/minecraft/network/protocol/Packet;)V", at = @At("HEAD"), cancellable = true)
-              private void onSend(Packet<?> packet, CallbackInfo ci) {
-                  if (flushing) return;
-
-                  if (GrimConfig.INSTANCE.enabled && (GrimConfig.INSTANCE.mode == 0 || GrimConfig.INSTANCE.mode == 1)) {
-                      if (packet instanceof ServerboundMovePlayerPacket) {
-                          buffer.add(packet);
-                          packetCount++;
-                          
-                          int limit = GrimConfig.INSTANCE.mode == 0 ? 3 : 6;
-                          
-                          if (packetCount >= limit) {
-                              flushing = true;
-                              for (Packet<?> p : buffer) {
-                                  ((Connection)(Object)this).send(p);
-                              }
-                              flushing = false;
-                              buffer.clear();
-                              packetCount = 0;
-                          }
-                          ci.cancel();
-                      }
-                  } else if (!buffer.isEmpty()) {
-                      flushing = true;
-                      for (Packet<?> p : buffer) ((Connection)(Object)this).send(p);
-                      flushing = false;
-                      buffer.clear();
-                      packetCount = 0;
-                  }
-              }
-          }
-          EOF
-
-          # MIXIN: LIVING ENTITY
-          cat << 'EOF' > src/client/java/com/example/client/mixin/LivingEntityMixin.java
-          package com.example.client.mixin;
-
-          import com.example.client.GrimConfig;
-          import net.minecraft.world.entity.LivingEntity;
-          import org.spongepowered.asm.mixin.Mixin;
-          import org.spongepowered.asm.mixin.injection.At;
-          import org.spongepowered.asm.mixin.injection.Inject;
-          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-
-          @Mixin(LivingEntity.class)
-          public class LivingEntityMixin {
-              @Inject(method = "aiStep", at = @At("HEAD"))
-              private void onAiStep(CallbackInfo ci) {
-                  if (GrimConfig.INSTANCE.enabled) {
-                      if (GrimConfig.INSTANCE.mode == 2 || GrimConfig.INSTANCE.mode == 3) {
-                          ((LivingEntity)(Object)this).noJumpDelay = 0;
-                      }
-                  }
-              }
-          }
-          EOF
-
-          # ГЛАВНЫЙ КЛАСС
-          cat << 'EOF' > src/client/java/com/example/client/GrimBypassClient.java
+          cat << 'EOF' > src/client/java/com/example/client/NoSlowClient.java
           package com.example.client;
 
           import com.mojang.blaze3d.platform.InputConstants;
           import net.fabricmc.api.ClientModInitializer;
           import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-          import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
           import net.minecraft.sounds.SoundEvents;
           import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
 
-          public class GrimBypassClient implements ClientModInitializer {
-              private static boolean xKeyWasDown = false;
-              private static boolean rCtrlWasDown = false;
-              private static int tickTimer = 0;
+          public class NoSlowClient implements ClientModInitializer {
+              // Настройка включения/выключения (по умолчанию выключено)
+              public static boolean enabled = false;
+              private static boolean jKeyWasDown = false;
 
               @Override
               public void onInitializeClient() {
-                  GrimConfig.load();
-
                   ClientTickEvents.END_CLIENT_TICK.register(client -> {
                       if (client.player == null || client.getWindow() == null) return;
+                      
                       long win = client.getWindow().getWindow();
-                      tickTimer++;
+                      boolean jDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_J);
 
-                      boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
-                      if (rCtrl && !rCtrlWasDown) {
-                          if (client.screen instanceof GrimScreen) client.setScreen(null);
-                          else if (client.screen == null) client.setScreen(new GrimScreen());
-                      }
-                      rCtrlWasDown = rCtrl;
-
-                      boolean xDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_X);
-                      if (xDown && !xKeyWasDown && client.screen == null) {
-                          GrimConfig.INSTANCE.enabled = !GrimConfig.INSTANCE.enabled;
-                          client.player.playSound(GrimConfig.INSTANCE.enabled ? SoundEvents.EXPERIENCE_ORB_PICKUP : SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
-                          GrimConfig.save();
-                      }
-                      xKeyWasDown = xDown;
-
-                      if (!GrimConfig.INSTANCE.enabled || client.screen != null) return;
-
-                      if (GrimConfig.INSTANCE.mode == 2) { 
-                          if (client.level.getBlockState(client.player.blockPosition().above(2)).isSolid() && client.player.onGround()) {
-                              client.player.jumpFromGround();
-                          }
-                      } 
-                      else if (GrimConfig.INSTANCE.mode == 3) { 
-                          if (client.player.horizontalCollision && client.options.keyJump.isDown()) {
-                              if (client.player.onGround()) {
-                                  client.player.jumpFromGround();
-                              } else {
-                                  if (client.player.getDeltaMovement().y < 0.42) {
-                                      client.player.setDeltaMovement(new Vec3(client.player.getDeltaMovement().x, 0.42, client.player.getDeltaMovement().z));
-                                  }
-                              }
-                          }
-                      }
-                      else if (GrimConfig.INSTANCE.mode == 4) { 
-                          // GHOST FLY (INERTIA)
-                          if (client.options.keyJump.isDown()) {
-                              client.player.setDeltaMovement(client.player.getDeltaMovement().add(0, 0.15, 0));
-                          } else if (client.options.keyShift.isDown()) {
-                              client.player.setDeltaMovement(client.player.getDeltaMovement().add(0, -0.15, 0));
+                      // Обработка нажатия клавиши J
+                      if (jDown && !jKeyWasDown) {
+                          enabled = !enabled;
+                          
+                          // Звук при включении (Эксп) и выключении (Бас)
+                          if (enabled) {
+                              client.player.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
                           } else {
-                              client.player.setDeltaMovement(client.player.getDeltaMovement().multiply(1, 0, 1));
+                              client.player.playSound(SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
                           }
+                      }
+                      jKeyWasDown = jDown;
 
-                          if (tickTimer % 15 == 0) {
-                              // ИСПРАВЛЕНО: убран 5-й аргумент
-                              client.player.connection.send(new ServerboundMovePlayerPacket.Pos(
-                                  client.player.getX(), client.player.getY(), client.player.getZ(), true
-                              ));
-                          }
-                      }
-                      else if (GrimConfig.INSTANCE.mode == 5) { 
-                          // ENTITY FLY (Идея 2)
-                          boolean nearEntity = !client.level.getEntities(client.player, client.player.getBoundingBox().inflate(4.0)).isEmpty();
-                          if (nearEntity) {
-                              if (client.options.keyJump.isDown()) {
-                                  client.player.setDeltaMovement(client.player.getDeltaMovement().add(0, 0.12, 0));
-                              } else {
-                                  client.player.setDeltaMovement(client.player.getDeltaMovement().multiply(1, 0, 1));
-                              }
-                              if (tickTimer % 10 == 0) {
-                                  // ИСПРАВЛЕНО: убран 5-й аргумент
-                                  client.player.connection.send(new ServerboundMovePlayerPacket.Pos(
-                                      client.player.getX(), client.player.getY(), client.player.getZ(), true
-                                  ));
-                              }
-                          }
-                      }
-                      else if (GrimConfig.INSTANCE.mode == 6) { 
-                          // NO-SLOW (Идея 3)
-                          if (client.player.isUsingItem()) {
-                              Vec3 currentSpeed = client.player.getDeltaMovement();
-                              client.player.setDeltaMovement(currentSpeed.x * 1.3, currentSpeed.y, currentSpeed.z * 1.3);
-                          }
+                      // Логика No-Slow
+                      if (enabled && client.player.isUsingItem()) {
+                          Vec3 motion = client.player.getDeltaMovement();
+                          
+                          // В ванильном Minecraft при еде скорость умножается на 0.2 (замедление в 5 раз).
+                          // Мы умножаем вектор обратно на 5.0, чтобы вернуть нормальную скорость.
+                          client.player.setDeltaMovement(motion.x * 5.0, motion.y, motion.z * 5.0);
                       }
                   });
               }
           }
           EOF
 
-          # МЕНЮ
-          cat << 'EOF' > src/client/java/com/example/client/GrimScreen.java
-          package com.example.client;
-
-          import net.minecraft.client.gui.GuiGraphics;
-          import net.minecraft.client.gui.components.Button;
-          import net.minecraft.client.gui.screens.Screen;
-          import net.minecraft.network.chat.Component;
-
-          public class GrimScreen extends Screen {
-              public GrimScreen() { super(Component.literal("Grim Bypasses")); }
-
-              @Override
-              protected void init() {
-                  this.clearWidgets();
-                  int x = this.width / 2 - 120;
-                  int y = this.height / 2 - 90;
-                  String[] names = {
-                      "Blink 150ms (Safe)",
-                      "Blink 300ms (Risky)",
-                      "Head-Hitting (Auto)",
-                      "Spider (Wall Climb)",
-                      "Ghost Fly (Inertia)",
-                      "Entity Fly (Near Mob)",
-                      "No-Slow (Eating)"
-                  };
-
-                  for (int i = 0; i < 7; i++) {
-                      final int mode = i;
-                      String btnText = (GrimConfig.INSTANCE.mode == i ? "§a" : "§7") + names[i];
-                      this.addRenderableWidget(Button.builder(Component.literal(btnText), b -> {
-                          GrimConfig.INSTANCE.mode = mode;
-                          GrimConfig.save();
-                          this.init();
-                      }).bounds(x, y + (i * 25), 240, 20).build());
-                  }
-              }
-
-              @Override
-              public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
-                  this.renderBackground(context, mouseX, mouseY, delta);
-                  context.drawCenteredString(this.font, "§l§bGrim/Polar Bypasses", this.width / 2, this.height / 2 - 110, 0xFFFFFF);
-                  context.drawCenteredString(this.font, "§7Status: " + (GrimConfig.INSTANCE.enabled ? "§aENABLED" : "§cDISABLED"), this.width / 2, this.height / 2 - 95, 0xFFFFFF);
-                  super.render(context, mouseX, mouseY, delta);
-              }
-
-              @Override public boolean isPauseScreen() { return false; }
-          }
-          EOF
       - uses: actions/setup-java@v4
         with:
           java-version: '25'
@@ -364,7 +122,7 @@ jobs:
       - run: chmod +x gradlew && ./gradlew clean build
       - uses: actions/upload-artifact@v4
         with:
-          name: gotoviy-mod
+          name: noslow-mod
           path: | 
             build/libs/*.jar
             !build/libs/*-sources.jar
