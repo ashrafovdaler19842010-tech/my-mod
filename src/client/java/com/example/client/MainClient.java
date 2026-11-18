@@ -1,88 +1,76 @@
-package com.example.client;
+name: Build Mod
 
-import com.mojang.blaze3d.platform.InputConstants;
-import net.fabricmc.api.ClientModInitializer;
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.minecraft.sounds.SoundEvents;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.phys.Vec3;
-import org.lwjgl.glfw.GLFW;
+on: [push]
 
-public class MainClient implements ClientModInitializer {
-    public static boolean noSlowEnabled = false;
-    public static boolean killAuraEnabled = false;
-    
-    private static boolean jKeyWasDown = false;
-    private static boolean kKeyWasDown = false;
-    private static int attackDelay = 0;
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - run: unzip -o mod.zip || true
+      
+      - name: Configure Project
+        run: |
+          sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
+          sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
 
-    @Override
-    public void onInitializeClient() {
-        ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            if (client.player == null || client.getWindow() == null || client.level == null) return;
-            
-            long win = client.getWindow().getWindow();
-            
-            // J - NoSlow
-            boolean jDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_J);
-            if (jDown && !jKeyWasDown) {
-                noSlowEnabled = !noSlowEnabled;
-                playToggleSound(client, noSlowEnabled);
+          # УДАЛЯЕМ ВСЕ ЛИШНИЕ ФАЙЛЫ ИЗ ШАБЛОНА
+          rm -f src/client/java/com/example/client/TemplateModClient.java
+          rm -f src/client/java/com/example/client/SprintResetClient.java
+          rm -f src/client/java/com/example/client/SprintResetScreen.java
+          
+          rm -f src/main/resources/*.mixins.json
+          rm -f src/client/resources/*.mixins.json
+
+          # СОЗДАЕМ fabric.mod.json
+          cat << 'EOF' > src/main/resources/fabric.mod.json
+          {
+            "schemaVersion": 1,
+            "id": "custommod",
+            "version": "1.0.0",
+            "name": "Custom Mod",
+            "description": "Mod built from custom sources",
+            "authors": ["You"],
+            "contact": {},
+            "license": "MIT",
+            "environment": "client",
+            "entrypoints": {
+              "client": [
+                "com.example.client.MainClient"
+              ]
+            },
+            "depends": {
+              "fabricloader": ">=0.16.0",
+              "minecraft": "~1.21",
+              "java": ">=21",
+              "fabric-api": "*"
             }
-            jKeyWasDown = jDown;
+          }
+          EOF
 
-            // K - KillAura
-            boolean kDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_K);
-            if (kDown && !kKeyWasDown) {
-                killAuraEnabled = !killAuraEnabled;
-                playToggleSound(client, killAuraEnabled);
-            }
-            kKeyWasDown = kDown;
+          if ! grep -q "duplicatesStrategy" build.gradle; then
+            echo "" >> build.gradle
+            echo "tasks.named('jar') {" >> build.gradle
+            echo "    duplicatesStrategy = DuplicatesStrategy.EXCLUDE" >> build.gradle
+            echo "}" >> build.gradle
+            echo "tasks.named('sourcesJar') {" >> build.gradle
+            echo "    duplicatesStrategy = DuplicatesStrategy.EXCLUDE" >> build.gradle
+            echo "}" >> build.gradle
+          fi
 
-            // --- ЛОГИКА NO-SLOW ---
-            if (noSlowEnabled && client.player.isUsingItem()) {
-                Vec3 motion = client.player.getDeltaMovement();
-                client.player.setDeltaMovement(motion.x * 5.0, motion.y, motion.z * 5.0);
-            }
+          echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
 
-            // --- ЛОГИКА KILLAURA ---
-            if (killAuraEnabled && client.interactionManager != null) {
-                if (attackDelay > 0) {
-                    attackDelay--;
-                } else {
-                    double range = 3.0;
-                    Entity target = null;
-                    double closestDist = range;
-
-                    for (Entity entity : client.level.getEntities(client.player, client.player.getBoundingBox().inflate(range))) {
-                        if (entity instanceof LivingEntity living && living != client.player && living.isAlive()) {
-                            double dist = client.player.distanceTo(living);
-                            if (dist <= closestDist) {
-                                closestDist = dist;
-                                target = living;
-                            }
-                        }
-                    }
-
-                    if (target != null) {
-                        if (client.player.getAttackStrengthScale(0.5F) >= 1.0F) {
-                            client.interactionManager.attackEntity(client.player, target);
-                            client.player.swing(InteractionHand.MAIN_HAND);
-                            attackDelay = 2;
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    private void playToggleSound(net.minecraft.client.Minecraft client, boolean enabled) {
-        if (enabled) {
-            client.player.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-        } else {
-            client.player.playSound(SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
-        }
-    }
-}
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          
+      - run: chmod +x gradlew && ./gradlew clean build
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: custom-mod
+          path: | 
+            build/libs/*.jar
+            !build/libs/*-sources.jar
