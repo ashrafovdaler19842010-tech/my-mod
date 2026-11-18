@@ -12,8 +12,9 @@ jobs:
       
       - name: Configure Project
         run: |
+          # ИСПРАВЛЕНО: Ставим точную версию игры
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
-          sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
+          sed -i 's/^minecraft_version=.*/minecraft_version=1.21.8/' gradle.properties
 
           rm -rf src
 
@@ -36,7 +37,7 @@ jobs:
             },
             "depends": {
               "fabricloader": ">=0.16.0",
-              "minecraft": "~1.21",
+              "minecraft": "~1.21.8",
               "java": ">=21",
               "fabric-api": "*"
             }
@@ -223,7 +224,7 @@ jobs:
                   if (objective != null) {
                       var score = scoreboard.getOrCreatePlayerScore(living, objective);
                       if (score != null) {
-                          return score.get(); // ИСПРАВЛЕНО ЗДЕСЬ
+                          return score.get(); 
                       }
                   }
                   return living.getHealth();
