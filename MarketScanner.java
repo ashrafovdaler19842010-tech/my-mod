@@ -8,26 +8,26 @@ import net.minecraft.screen.GenericContainerScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Random;
 
 public class MarketScanner {
     public static final MarketScanner INSTANCE = new MarketScanner();
 
     private static final long SCAN_INTERVAL_MS = 10 * 60 * 1000L; // Раз в 10 минут
-    private static final int PAGES_PER_ANARCHY = 50;
-    private static final int TOTAL_PHASES = 4; // 4 круга по 50 стр. = 200 стр.
+    private static final int PAGES_PER_ITEM = 2;
     private static final int NEXT_PAGE_SLOT_INDEX = 51; // 52-й слот (стрелка вправо)
 
     public enum State {
         IDLE,
-        OPENING_AH,
+        SEARCH_ITEM,
         WAIT_OPEN,
-        FLIPPING_PAGES,
+        SCAN_PAGE,
         SWITCHING_HUB,
         SWITCHING_ANARCHY
     }
@@ -38,12 +38,14 @@ public class MarketScanner {
     private long lastFullScanTime = 0;
     private long nextActionTime = 0;
     private long stateStartTime = 0;
-    private int currentPhase = 1;
-    private int currentPageCount = 0;
 
-    private final Map<String, String> originalNames = new HashMap<>();
-    private final Map<String, String> itemIds = new HashMap<>();
-    private final Map<String, List<Double>> collectedPrices = new HashMap<>();
+    private final Queue<String> keysQueue = new ArrayDeque<>();
+    private String currentUniqueKey = "";
+    private BotConfig.ItemData currentTarget = null;
+    private final List<Double> currentItemPrices = new ArrayList<>();
+
+    private int pagesCheckedForCurrent = 0;
+    private int itemsCheckedSinceSwitch = 0;
 
     public boolean isRunning() {
         return state != State.IDLE;
@@ -51,23 +53,35 @@ public class MarketScanner {
 
     public String getStatusText() {
         if (state == State.IDLE) return "Ожидание";
-        return "Скан [" + currentPhase + "/" + TOTAL_PHASES + "] стр. " + currentPageCount + "/" + PAGES_PER_ANARCHY;
+        String name = currentTarget != null ? currentTarget.searchName : "...";
+        return "Оценка: " + name + " (ост: " + keysQueue.size() + ")";
     }
 
     public void startFullScan(MinecraftClient client) {
         if (client.player == null || client.getNetworkHandler() == null) return;
-        originalNames.clear();
-        itemIds.clear();
-        collectedPrices.clear();
-        currentPhase = 1;
-        currentPageCount = 0;
-        state = State.OPENING_AH;
-        nextActionTime = System.currentTimeMillis() + 200;
-        client.player.sendMessage(Text.literal("§b[AuctionBot] §fЗапуск скана: 4 круга по 50 стр. (всего 200 стр.)"), false);
+
+        keysQueue.clear();
+        for (Map.Entry<String, BotConfig.ItemData> entry : BotConfig.INSTANCE.items.entrySet()) {
+            if (entry.getValue().enabled) {
+                keysQueue.add(entry.getKey());
+            }
+        }
+
+        if (keysQueue.isEmpty()) {
+            client.player.sendMessage(Text.literal("§c[AuctionBot] §fСписок пуст! Наведите мышку на лот в /ah и нажмите [X / Ч]."), false);
+            state = State.IDLE;
+            return;
+        }
+
+        itemsCheckedSinceSwitch = 0;
+        state = State.SEARCH_ITEM;
+        nextActionTime = System.currentTimeMillis() + 250;
+        client.player.sendMessage(Text.literal("§b[AuctionBot] §fНачинаю оценку " + keysQueue.size() + " выбранных предметов (смена анки каждые 2 шт.)..."), false);
     }
 
     public void stopScan() {
         state = State.IDLE;
+        keysQueue.clear();
     }
 
     private long jitter(long baseMs, int minExtra, int maxExtra) {
@@ -78,8 +92,8 @@ public class MarketScanner {
         if (client.player == null || client.getNetworkHandler() == null || client.interactionManager == null) return;
         long now = System.currentTimeMillis();
 
-        // Автозапуск раз в 10 минут, если бот включен
-        if (state == State.IDLE && AuctionSniper.INSTANCE.isBotEnabled()) {
+        // Автозапуск раз в 10 минут, если бот включен и в списке есть выбранные предметы
+        if (state == State.IDLE && AuctionSniper.INSTANCE.isBotEnabled() && !BotConfig.INSTANCE.items.isEmpty()) {
             if (lastFullScanTime == 0 || (now - lastFullScanTime >= SCAN_INTERVAL_MS)) {
                 startFullScan(client);
                 return;
@@ -88,40 +102,72 @@ public class MarketScanner {
 
         if (state == State.IDLE || now < nextActionTime) return;
 
+        BotConfig.SpeedMode speed = BotConfig.INSTANCE.speedMode;
+
         switch (state) {
-            case OPENING_AH -> {
+            case SEARCH_ITEM -> {
+                if (keysQueue.isEmpty()) {
+                    BotConfig.save();
+                    lastFullScanTime = now;
+                    state = State.IDLE;
+                    client.player.sendMessage(Text.literal("§a[AuctionBot] §fЦены всех выбранных предметов обновлены! Начинаю скупку."), false);
+                    return;
+                }
+
+                // Каждые 2 проверенных предмета меняем анархию, чтобы анти-спам не забанил/не кикнул
+                if (itemsCheckedSinceSwitch >= 2) {
+                    itemsCheckedSinceSwitch = 0;
+                    if (client.currentScreen != null) {
+                        client.player.closeHandledScreen();
+                    }
+                    state = State.SWITCHING_HUB;
+                    nextActionTime = now + jitter(500, 200, 450);
+                    return;
+                }
+
                 if (client.currentScreen != null) {
                     client.player.closeHandledScreen();
                     nextActionTime = now + jitter(250, 100, 250);
                     return;
                 }
-                client.getNetworkHandler().sendChatCommand("ah");
+
+                currentUniqueKey = keysQueue.poll();
+                currentTarget = BotConfig.INSTANCE.items.get(currentUniqueKey);
+                if (currentTarget == null || !currentTarget.enabled) {
+                    return;
+                }
+
+                currentItemPrices.clear();
+                pagesCheckedForCurrent = 0;
+
+                client.getNetworkHandler().sendChatCommand("ah search " + currentTarget.searchName);
                 stateStartTime = now;
                 state = State.WAIT_OPEN;
-                nextActionTime = now + jitter(350, 150, 300);
+                nextActionTime = now + jitter(Math.max(400L, speed.guiReactDelayMs), 150, 350);
             }
 
             case WAIT_OPEN -> {
                 if (client.currentScreen instanceof GenericContainerScreen) {
-                    currentPageCount = 0;
-                    state = State.FLIPPING_PAGES;
-                    nextActionTime = now + jitter(180, 100, 220);
-                } else if (now - stateStartTime > 3500) {
-                    state = State.OPENING_AH;
+                    state = State.SCAN_PAGE;
+                    nextActionTime = now + jitter(180, 100, 250);
+                } else if (now - stateStartTime > 3000) {
+                    // Если по этому запросу ничего не найдено или не открылось — идем к следующему
+                    itemsCheckedSinceSwitch++;
+                    state = State.SEARCH_ITEM;
+                    nextActionTime = now + jitter(600, 250, 500);
                 }
             }
-            case FLIPPING_PAGES -> {
+            case SCAN_PAGE -> {
                 if (!(client.currentScreen instanceof GenericContainerScreen containerScreen)) {
-                    state = State.OPENING_AH;
-                    nextActionTime = now + 400;
+                    finishCurrentItem(client);
                     return;
                 }
 
-                collectFromPage(containerScreen, client);
-                currentPageCount++;
+                collectMatchingFromPage(containerScreen, client);
+                pagesCheckedForCurrent++;
 
                 GenericContainerScreenHandler handler = containerScreen.getScreenHandler();
-                boolean canFlipNext = currentPageCount < PAGES_PER_ANARCHY
+                boolean canFlipNext = pagesCheckedForCurrent < PAGES_PER_ITEM
                         && handler.slots.size() > NEXT_PAGE_SLOT_INDEX
                         && !handler.slots.get(NEXT_PAGE_SLOT_INDEX).getStack().isEmpty();
 
@@ -129,18 +175,10 @@ public class MarketScanner {
                     client.interactionManager.clickSlot(
                             handler.syncId, NEXT_PAGE_SLOT_INDEX, 0, SlotActionType.PICKUP, client.player
                     );
-                    nextActionTime = now + jitter(260, 120, 280);
+                    nextActionTime = now + jitter(320, 150, 300);
                 } else {
                     client.player.closeHandledScreen();
-                    if (currentPhase < TOTAL_PHASES) {
-                        currentPhase++;
-                        state = State.SWITCHING_HUB;
-                        nextActionTime = now + jitter(500, 200, 500);
-                    } else {
-                        finalizeAndSavePrices(client);
-                        lastFullScanTime = now;
-                        state = State.IDLE;
-                    }
+                    finishCurrentItem(client);
                 }
             }
 
@@ -150,20 +188,21 @@ public class MarketScanner {
                 }
                 client.getNetworkHandler().sendChatCommand("hub");
                 state = State.SWITCHING_ANARCHY;
-                nextActionTime = now + jitter(2000, 600, 1400);
+                nextActionTime = now + jitter(2100, 600, 1300);
             }
 
             case SWITCHING_ANARCHY -> {
                 int anarchyNum = 103 + random.nextInt(6);
                 client.getNetworkHandler().sendChatCommand("an" + anarchyNum);
-                client.player.sendMessage(Text.literal("§b[AuctionBot] §fКруг #" + currentPhase + " на /an" + anarchyNum + "..."), false);
-                state = State.OPENING_AH;
+                client.player.sendMessage(Text.literal("§d[AuctionBot] §fСмена анки для скана -> /an" + anarchyNum), false);
+                state = State.SEARCH_ITEM;
                 nextActionTime = now + jitter(2800, 800, 1500);
             }
         }
     }
 
-    private void collectFromPage(GenericContainerScreen screen, MinecraftClient client) {
+    private void collectMatchingFromPage(GenericContainerScreen screen, MinecraftClient client) {
+        if (currentTarget == null) return;
         GenericContainerScreenHandler handler = screen.getScreenHandler();
         int maxSlots = Math.min(45, handler.getRows() * 9);
 
@@ -171,61 +210,46 @@ public class MarketScanner {
             ItemStack stack = handler.slots.get(i).getStack();
             if (PriceParser.isSoldPlaceholder(stack)) continue;
 
+            // Проверяем, что предмет совпадает по точному названию + зачарованиям
+            String slotKey = PriceParser.buildUniqueKey(stack);
+            if (!slotKey.equals(currentUniqueKey)) continue;
+
             double unitPrice = PriceParser.parseUnitPrice(stack, client);
-            if (unitPrice <= 0) continue;
-
-            String cleanName = PriceParser.getCleanItemName(stack);
-            if (cleanName.isEmpty()) continue;
-
-            String key = cleanName.toLowerCase();
-            originalNames.putIfAbsent(key, cleanName);
-            itemIds.putIfAbsent(key, PriceParser.getItemId(stack));
-            collectedPrices.computeIfAbsent(key, k -> new ArrayList<>()).add(unitPrice);
+            if (unitPrice > 0) {
+                currentItemPrices.add(unitPrice);
+            }
         }
     }
 
-    private void finalizeAndSavePrices(MinecraftClient client) {
-        int savedCount = 0;
+    private void finishCurrentItem(MinecraftClient client) {
+        if (currentTarget != null && !currentItemPrices.isEmpty()) {
+            Collections.sort(currentItemPrices);
 
-        for (Map.Entry<String, List<Double>> entry : collectedPrices.entrySet()) {
-            String key = entry.getKey();
-            List<Double> prices = entry.getValue();
-            if (prices.isEmpty()) continue;
+            double chosenPrice;
+            if (currentItemPrices.size() >= 3) {
+                double median = currentItemPrices.get(currentItemPrices.size() / 2);
+                double minLegitThreshold = median * 0.25; // Отбрасываем подставы анти-чита
 
-            Collections.sort(prices);
-
-            double chosenBestPrice;
-            if (prices.size() >= 3) {
-                double median = prices.get(prices.size() / 2);
-                double minLegitThreshold = median * 0.25;
-
-                chosenBestPrice = prices.get(prices.size() - 1);
-                for (double p : prices) {
+                chosenPrice = currentItemPrices.get(currentItemPrices.size() - 1);
+                for (double p : currentItemPrices) {
                     if (p >= minLegitThreshold) {
-                        chosenBestPrice = p;
+                        chosenPrice = p;
                         break;
                     }
                 }
+            } else if (currentItemPrices.size() == 2 && currentItemPrices.get(0) < currentItemPrices.get(1) * 0.2) {
+                chosenPrice = currentItemPrices.get(1);
             } else {
-                if (prices.size() == 2 && prices.get(0) < prices.get(1) * 0.2) {
-                    chosenBestPrice = prices.get(1);
-                } else {
-                    chosenBestPrice = prices.get(0);
-                }
+                chosenPrice = currentItemPrices.get(0);
             }
 
-            String displayName = originalNames.getOrDefault(key, key);
-            String id = itemIds.getOrDefault(key, "minecraft:barrier");
-            BotConfig.INSTANCE.updateItemPrice(displayName, id, chosenBestPrice);
-            savedCount++;
+            currentTarget.unitPrice = chosenPrice;
+            BotConfig.save();
         }
 
-        BotConfig.save();
-        if (client.player != null) {
-            client.player.sendMessage(Text.literal(
-                    "§a[AuctionBot] §fСкан 4x50 стр. завершен! Сохранено: " + savedCount + " предметов."
-            ), false);
-        }
+        itemsCheckedSinceSwitch++;
+        state = State.SEARCH_ITEM;
+        nextActionTime = System.currentTimeMillis() + jitter(650, 250, 500);
     }
 
     public boolean handleSuggestionsPacket(CommandSuggestionsS2CPacket packet) {
