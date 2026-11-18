@@ -1,241 +1,97 @@
 package com.auctionbot;
 
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.gui.screen.ingame.GenericContainerScreen;
 import net.minecraft.item.ItemStack;
 import net.minecraft.network.packet.s2c.play.CommandSuggestionsS2CPacket;
 import net.minecraft.screen.GenericContainerScreenHandler;
 import net.minecraft.text.Text;
-import org.lwjgl.glfw.GLFW;
 
-import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
-import java.util.Queue;
-import java.util.Set;
 
 public class MarketScanner {
     public static final MarketScanner INSTANCE = new MarketScanner();
 
-    private static final String RU_CHARS = "абвгдежзийклмнопрстуфхцчшщъыьэюя";
-    private static final long SCAN_INTERVAL_MS = 30 * 60 * 1000L; // 30 минут
-
-    public enum State {
-        IDLE,
-        OPEN_CHAT,
-        TYPE_PREFIX,
-        PRESS_TAB,
-        WAIT_TAB_RESULT,
-        SEARCHING_ITEM,
-        WAITING_CHEST
-    }
-
-    private State state = State.IDLE;
-    private long lastFullScanTime = 0;
-    private long nextActionTime = 0;
-    private long stepStartTime = 0;
-
-    private final List<String> prefixes = new ArrayList<>();
-    private int prefixIndex = 0;
-    private boolean gotSuggestionsForCurrentPrefix = false;
-
-    private final Set<String> discoveredItems = new LinkedHashSet<>();
-    private final Queue<String> itemsQueue = new ArrayDeque<>();
-    private String currentSearchQuery = "";
-
-    public MarketScanner() {
-        // Все 2-буквенные комбинации от "аа" до "яя"
-        for (int i = 0; i < RU_CHARS.length(); i++) {
-            for (int j = 0; j < RU_CHARS.length(); j++) {
-                prefixes.add("" + RU_CHARS.charAt(i) + RU_CHARS.charAt(j));
-            }
-        }
-    }
+    private boolean passiveLearningEnabled = true;
+    private int learnedItemsCount = 0;
 
     public boolean isRunning() {
-        return state != State.IDLE;
+        return false; // Больше не блокирует снайпер агрессивным перебором
     }
 
     public String getStatusText() {
-        return switch (state) {
-            case IDLE -> "Ожидание";
-            case OPEN_CHAT, TYPE_PREFIX, PRESS_TAB, WAIT_TAB_RESULT -> {
-                String cur = prefixIndex < prefixes.size() ? prefixes.get(prefixIndex) : "яя";
-                yield "TAB [" + cur + "] (" + prefixIndex + "/" + prefixes.size() + ") Найдено: " + discoveredItems.size();
-            }
-            case SEARCHING_ITEM, WAITING_CHEST -> "Скан цен (осталось: " + itemsQueue.size() + ")";
-        };
+        return "Пассивный скан (база: " + BotConfig.INSTANCE.items.size() + ")";
     }
 
     public void startFullScan(MinecraftClient client) {
-        if (client.player == null || client.getNetworkHandler() == null) return;
-        discoveredItems.clear();
-        itemsQueue.clear();
-        prefixIndex = 0;
-        gotSuggestionsForCurrentPrefix = false;
-        state = State.OPEN_CHAT;
-        nextActionTime = System.currentTimeMillis();
-        client.player.sendMessage(Text.literal("§b[AuctionBot] §fБыстрый сбор всех предметов по TAB (аа..яя)..."), false);
+        passiveLearningEnabled = true;
+        if (client.player != null) {
+            client.player.sendMessage(Text.literal(
+                    "§b[AuctionBot] §fЛегитный режим: цены обновляются автоматически при просмотре /ah и /ah search."
+            ), false);
+        }
     }
 
     public void stopScan() {
-        state = State.IDLE;
+        // В пассивном режиме остановка не требуется
     }
 
     public void tick(MinecraftClient client) {
-        if (client.player == null || client.getNetworkHandler() == null) return;
-        long now = System.currentTimeMillis();
+        if (!passiveLearningEnabled || client.player == null) return;
 
-        // Автозапуск раз в 30 минут, если бот активен
-        if (state == State.IDLE && AuctionSniper.INSTANCE.isBotEnabled()) {
-            if (lastFullScanTime == 0 || (now - lastFullScanTime >= SCAN_INTERVAL_MS)) {
-                startFullScan(client);
-                return;
-            }
-        }
-
-        if (state == State.IDLE || now < nextActionTime) return;
-
-        BotConfig.SpeedMode speed = BotConfig.INSTANCE.speedMode;
-
-        switch (state) {
-            case OPEN_CHAT -> {
-                client.setScreen(new ChatScreen(""));
-                state = State.TYPE_PREFIX;
-                nextActionTime = now + 40;
-            }
-
-            case TYPE_PREFIX -> {
-                if (prefixIndex >= prefixes.size()) {
-                    if (client.currentScreen instanceof ChatScreen) {
-                        client.setScreen(null);
-                    }
-                    itemsQueue.addAll(discoveredItems);
-                    client.player.sendMessage(Text.literal("§b[AuctionBot] §fСбор окончен! Собрано запросов: " + itemsQueue.size() + ". Оцениваю цены..."), false);
-                    state = State.SEARCHING_ITEM;
-                    nextActionTime = now + speed.chatDelayMs;
-                    return;
-                }
-
-                String prefix = prefixes.get(prefixIndex);
-                String cmd = "/ah search " + prefix;
-
-                client.setScreen(new ChatScreen(cmd));
-                gotSuggestionsForCurrentPrefix = false;
-                state = State.PRESS_TAB;
-                nextActionTime = now + 25;
-            }
-
-            case PRESS_TAB -> {
-                if (client.currentScreen instanceof ChatScreen chatScreen) {
-                    // Нажимаем TAB — сервер сам пришлет весь выпадающий список в пакет CommandSuggestionsS2CPacket
-                    chatScreen.keyPressed(GLFW.GLFW_KEY_TAB, 0, 0);
-                }
-                stepStartTime = now;
-                state = State.WAIT_TAB_RESULT;
-                nextActionTime = now + 45;
-            }
-
-            case WAIT_TAB_RESULT -> {
-                // Ждем до 160 мс; как только список пришел (или его нет на эту пару) — сразу летим к следующей паре
-                if (gotSuggestionsForCurrentPrefix || (now - stepStartTime > 160)) {
-                    prefixIndex++;
-                    state = State.TYPE_PREFIX;
-                    nextActionTime = now + 15;
-                }
-            }
-
-            case SEARCHING_ITEM -> {
-                if (itemsQueue.isEmpty()) {
-                    BotConfig.save();
-                    lastFullScanTime = now;
-                    state = State.IDLE;
-                    client.player.sendMessage(Text.literal("§a[AuctionBot] §fВсе цены запомнены! Начинаю покупку."), false);
-                    return;
-                }
-
-                if (client.currentScreen != null) {
-                    client.player.closeHandledScreen();
-                    client.setScreen(null);
-                    nextActionTime = now + speed.guiReactDelayMs;
-                    return;
-                }
-
-                currentSearchQuery = itemsQueue.poll();
-                client.getNetworkHandler().sendChatCommand("ah search " + currentSearchQuery);
-                stepStartTime = now;
-                state = State.WAITING_CHEST;
-                nextActionTime = now + speed.guiReactDelayMs;
-            }
-
-            case WAITING_CHEST -> {
-                if (client.currentScreen instanceof GenericContainerScreen containerScreen) {
-                    evaluateChestAndSave(containerScreen, client);
-                    client.player.closeHandledScreen();
-                    state = State.SEARCHING_ITEM;
-                    nextActionTime = now + speed.chatDelayMs;
-                } else if (now - stepStartTime > 2000) {
-                    state = State.SEARCHING_ITEM;
-                    nextActionTime = now + speed.chatDelayMs;
-                }
-            }
+        // Если открыт любой сундук аукциона — тихо запоминаем минимальные цены без отправки команд
+        if (client.currentScreen instanceof GenericContainerScreen containerScreen) {
+            learnFromOpenScreen(containerScreen, client);
         }
     }
 
-    public boolean handleSuggestionsPacket(CommandSuggestionsS2CPacket packet) {
-        if (state != State.PRESS_TAB && state != State.WAIT_TAB_RESULT && state != State.TYPE_PREFIX) {
-            return false;
-        }
-
-        boolean addedAny = false;
-        for (CommandSuggestionsS2CPacket.Suggestion suggestion : packet.suggestions()) {
-            String text = suggestion.text().trim();
-            // Игнорируем только саму команду и плейсхолдеры вида [<args>]
-            if (!text.isEmpty() && !text.startsWith("/") && !text.startsWith("[<")) {
-                discoveredItems.add(text);
-                addedAny = true;
-            }
-        }
-
-        if (addedAny) {
-            gotSuggestionsForCurrentPrefix = true;
-        }
-        return false;
-    }
-
-    private void evaluateChestAndSave(GenericContainerScreen screen, MinecraftClient client) {
+    public void learnFromOpenScreen(GenericContainerScreen screen, MinecraftClient client) {
         GenericContainerScreenHandler handler = screen.getScreenHandler();
-        int maxSlots = Math.min(45, handler.getRows() * 9);
+        int totalSlots = handler.getRows() * 9;
+        if (totalSlots < 54) return; // Сканируем только страницы аукциона (54 слота)
 
-        // Группируем по точному названию предмета в каждом слоте (отдельно Талисман Крушителя, отдельно Карателя и т.д.)
-        Map<String, Double> bestPricesByExactName = new HashMap<>();
+        Map<String, Double> lowestInPage = new HashMap<>();
 
-        for (int i = 0; i < maxSlots; i++) {
+        for (int i = 0; i < 45; i++) {
             ItemStack stack = handler.slots.get(i).getStack();
             if (stack.isEmpty()) continue;
 
             double unitPrice = PriceParser.parseUnitPrice(stack, client);
             if (unitPrice <= 0) continue;
 
-            String exactName = PriceParser.getCleanItemName(stack);
-            if (exactName.isEmpty()) exactName = currentSearchQuery;
+            String cleanName = PriceParser.getCleanItemName(stack);
+            if (cleanName.isEmpty()) continue;
 
-            double prevBest = bestPricesByExactName.getOrDefault(exactName, Double.MAX_VALUE);
-            if (unitPrice < prevBest) {
-                bestPricesByExactName.put(exactName, unitPrice);
+            double prev = lowestInPage.getOrDefault(cleanName, Double.MAX_VALUE);
+            if (unitPrice < prev) {
+                lowestInPage.put(cleanName, unitPrice);
             }
         }
 
-        for (Map.Entry<String, Double> entry : bestPricesByExactName.entrySet()) {
-            BotConfig.INSTANCE.updateItemPrice(entry.getKey(), entry.getValue());
+        boolean changed = false;
+        for (Map.Entry<String, Double> entry : lowestInPage.entrySet()) {
+            String key = entry.getKey().toLowerCase();
+            BotConfig.ItemData existing = BotConfig.INSTANCE.items.get(key);
+            if (existing == null) {
+                BotConfig.INSTANCE.updateItemPrice(entry.getKey(), entry.getValue());
+                learnedItemsCount++;
+                changed = true;
+            } else if (entry.getValue() < existing.unitPrice) {
+                // Обновляем рыночную цену вниз только если разница разумная (не ошибочный лот за 1 монету)
+                if (entry.getValue() >= existing.unitPrice * 0.5) {
+                    existing.unitPrice = entry.getValue();
+                    changed = true;
+                }
+            }
         }
 
-        if (!bestPricesByExactName.isEmpty()) {
+        if (changed) {
             BotConfig.save();
         }
+    }
+
+    public boolean handleSuggestionsPacket(CommandSuggestionsS2CPacket packet) {
+        return false; // Никогда не перехватываем и не блокируем пакеты сервера
     }
 }
