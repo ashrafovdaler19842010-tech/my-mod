@@ -7,38 +7,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
+      # Распаковываем твой шаблон мода
       - run: unzip -o mod.zip || true
-      - name: Build Mod Sources
+      
+      - name: Configure Project
         run: |
-          # 1. ПОЛНАЯ ОЧИСТКА СТАРЫХ ФАЙЛОВ
-          rm -rf build/
-          rm -f src/main/resources/*.mixins.json
-          rm -f src/main/resources/*.accesswidener
-          rm -f src/client/resources/*.mixins.json
-          rm -f src/client/resources/*.accesswidener
-          
-          # Удаляем старые джава-классы
-          rm -rf src/client/java/com/example/client/*
-
-          # 2. НАСТРАИВАЕМ ВЕРСИИ (чтобы не было ошибок совместимости)
+          # 1. Понижаем версии, чтобы не было конфликтов с загрузчиком
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
 
-          # 3. ПЕРЕСОЗДАЕМ fabric.mod.json (без упоминания миксинов)
+          # 2. Создаем fabric.mod.json с правильной точкой входа (на твой файл)
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
-            "id": "noslow",
+            "id": "custommod",
             "version": "1.0.0",
-            "name": "NoSlow Only",
-            "description": "J - toggle",
+            "name": "Custom Mod",
+            "description": "Mod built from custom sources",
             "authors": ["You"],
             "contact": {},
             "license": "MIT",
             "environment": "client",
             "entrypoints": {
               "client": [
-                "com.example.client.NoSlowClient"
+                "com.example.client.MainClient"
               ]
             },
             "depends": {
@@ -50,7 +43,7 @@ jobs:
           }
           EOF
 
-          # 4. НАСТРАИВАЕМ build.gradle (только защита от дубликатов)
+          # 3. Настраиваем build.gradle
           if ! grep -q "duplicatesStrategy" build.gradle; then
             echo "" >> build.gradle
             echo "tasks.named('jar') {" >> build.gradle
@@ -63,66 +56,16 @@ jobs:
 
           echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
 
-          # 5. СОЗДАЕМ ЕДИНСТВЕННЫЙ КЛАСС (БЕЗ ГУИ, ТОЛЬКО ЛОГИКА)
-          mkdir -p src/client/java/com/example/client
-          
-          cat << 'EOF' > src/client/java/com/example/client/NoSlowClient.java
-          package com.example.client;
-
-          import com.mojang.blaze3d.platform.InputConstants;
-          import net.fabricmc.api.ClientModInitializer;
-          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-          import net.minecraft.sounds.SoundEvents;
-          import net.minecraft.world.phys.Vec3;
-          import org.lwjgl.glfw.GLFW;
-
-          public class NoSlowClient implements ClientModInitializer {
-              // Настройка включения/выключения (по умолчанию выключено)
-              public static boolean enabled = false;
-              private static boolean jKeyWasDown = false;
-
-              @Override
-              public void onInitializeClient() {
-                  ClientTickEvents.END_CLIENT_TICK.register(client -> {
-                      if (client.player == null || client.getWindow() == null) return;
-                      
-                      long win = client.getWindow().getWindow();
-                      boolean jDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_J);
-
-                      // Обработка нажатия клавиши J
-                      if (jDown && !jKeyWasDown) {
-                          enabled = !enabled;
-                          
-                          // Звук при включении (Эксп) и выключении (Бас)
-                          if (enabled) {
-                              client.player.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                          } else {
-                              client.player.playSound(SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
-                          }
-                      }
-                      jKeyWasDown = jDown;
-
-                      // Логика No-Slow
-                      if (enabled && client.player.isUsingItem()) {
-                          Vec3 motion = client.player.getDeltaMovement();
-                          
-                          // В ванильном Minecraft при еде скорость умножается на 0.2 (замедление в 5 раз).
-                          // Мы умножаем вектор обратно на 5.0, чтобы вернуть нормальную скорость.
-                          client.player.setDeltaMovement(motion.x * 5.0, motion.y, motion.z * 5.0);
-                      }
-                  });
-              }
-          }
-          EOF
-
       - uses: actions/setup-java@v4
         with:
-          java-version: '25'
+          java-version: '21' # Используем 21 версию (стабильная для 1.21)
           distribution: 'temurin'
+          
       - run: chmod +x gradlew && ./gradlew clean build
+      
       - uses: actions/upload-artifact@v4
         with:
-          name: noslow-mod
+          name: custom-mod
           path: | 
             build/libs/*.jar
             !build/libs/*-sources.jar
