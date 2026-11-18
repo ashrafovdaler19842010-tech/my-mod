@@ -16,18 +16,15 @@ jobs:
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21.8/' gradle.properties
 
-          # 2. ДОБАВЛЯЕМ METEOR CLIENT В ЗАВИСИМОСТИ
+          # 2. ДОБАВЛЯЕМ METEOR CLIENT (Используем echo для надежности)
           if ! grep -q "maven.meteordev.org" build.gradle; then
-            cat << 'EOF' >> build.gradle
-            
-            repositories {
-                maven { url 'https://maven.meteordev.org/releases' }
-            }
-            
-            dependencies {
-                modImplementation "meteordevelopment:meteor-client:0.5.8-SNAPSHOT"
-            }
-            EOF
+            echo "" >> build.gradle
+            echo "repositories {" >> build.gradle
+            echo "    maven { url 'https://maven.meteordev.org/releases' }" >> build.gradle
+            echo "}" >> build.gradle
+            echo "dependencies {" >> build.gradle
+            echo "    modImplementation \"meteordevelopment:meteor-client:0.5.8-SNAPSHOT\"" >> build.gradle
+            echo "}" >> build.gradle
           fi
 
           # 3. ПОЛНАЯ ОЧИСТКА И СОЗДАНИЕ ПАПОК
@@ -38,7 +35,7 @@ jobs:
           mkdir -p src/client/java/zgoly/meteorist/utils
           mkdir -p src/client/java/zgoly/meteorist/modules
 
-          # 4. fabric.mod.json (Указываем, что это Meteor Addon)
+          # 4. fabric.mod.json
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
