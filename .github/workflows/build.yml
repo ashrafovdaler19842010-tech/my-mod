@@ -10,20 +10,16 @@ jobs:
       - run: unzip -o mod.zip || true
       - name: Build Mod Sources
         run: |
-          # 1. УДАЛЯЕМ ВСЕ СТАРЫЕ ФАЙЛЫ И СБРАСЫВАЕМ КЭШ
           rm -f build/libs/*.jar
           
-          # 2. ПОНИЖАЕМ ТРЕБОВАНИЯ К FABRIC LOADER (чтобы работало на 0.18.6)
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
 
-          # 3. УДАЛЯЕМ СТАРЫЕ КОНФИГИ МИКСИНОВ
           rm -f src/main/resources/template-mod.mixins.json
           rm -f src/main/resources/template-mod.client.mixins.json
           rm -f src/client/resources/template-mod.mixins.json
           rm -f src/client/resources/template-mod.client.mixins.json
 
-          # 4. ПОЛНОСТЬЮ ПЕРЕСОЗДАЕМ fabric.mod.json
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
@@ -53,7 +49,6 @@ jobs:
           }
           EOF
 
-          # 5. СОЗДАЕМ НОВЫЙ ЧИСТЫЙ КОНФИГ МИКСИНОВ
           cat << 'EOF' > src/main/resources/template-mod.mixins.json
           {
             "required": true,
@@ -70,13 +65,11 @@ jobs:
           }
           EOF
 
-          # 6. СОЗДАЕМ ACCESS WIDENER
           cat << 'EOF' > src/main/resources/template-mod.accesswidener
           accessWidener v2 named
           accessible field net/minecraft/world/entity/LivingEntity noJumpDelay I
           EOF
 
-          # 7. НАСТРАИВАЕМ build.gradle
           if ! grep -q "accessWidenerPath" build.gradle; then
             echo "" >> build.gradle
             echo "loom {" >> build.gradle
@@ -96,7 +89,6 @@ jobs:
 
           echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
 
-          # 8. ОЧИЩАЕМ СТАРЫЕ JAVA-КЛАССЫ
           rm -rf src/client/java/com/example/client/*
           mkdir -p src/client/java/com/example/client/mixin
           
@@ -132,7 +124,7 @@ jobs:
           }
           EOF
 
-          # MIXIN: BLINK
+          # MIXIN: BLINK (НЕ ТРОНУТ, ФЛАГИ НА МЕСТЕ)
           cat << 'EOF' > src/client/java/com/example/client/mixin/ConnectionMixin.java
           package com.example.client.mixin;
 
@@ -187,7 +179,7 @@ jobs:
           }
           EOF
 
-          # MIXIN: HEAD-HITTING & SPIDER
+          # MIXIN: HEAD-HITTING & SPIDER (НЕ ТРОНУТ)
           cat << 'EOF' > src/client/java/com/example/client/mixin/LivingEntityMixin.java
           package com.example.client.mixin;
 
@@ -209,7 +201,7 @@ jobs:
           }
           EOF
 
-          # ГЛАВНЫЙ КЛАСС
+          # ГЛАВНЫЙ КЛАСС (Fly через Desync / Hover)
           cat << 'EOF' > src/client/java/com/example/client/GrimBypassClient.java
           package com.example.client;
 
@@ -217,12 +209,12 @@ jobs:
           import net.fabricmc.api.ClientModInitializer;
           import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
           import net.minecraft.sounds.SoundEvents;
+          import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
 
           public class GrimBypassClient implements ClientModInitializer {
               private static boolean xKeyWasDown = false;
               private static boolean rCtrlWasDown = false;
-              private static int tickTimer = 0;
 
               @Override
               public void onInitializeClient() {
@@ -231,7 +223,6 @@ jobs:
                   ClientTickEvents.END_CLIENT_TICK.register(client -> {
                       if (client.player == null || client.getWindow() == null) return;
                       long win = client.getWindow().getWindow();
-                      tickTimer++;
 
                       boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
@@ -250,15 +241,48 @@ jobs:
 
                       if (!GrimConfig.INSTANCE.enabled || client.screen != null) return;
 
-                      if (GrimConfig.INSTANCE.mode == 2) {
+                      if (GrimConfig.INSTANCE.mode == 2) { 
                           if (client.level.getBlockState(client.player.blockPosition().above(2)).isSolid() && client.player.onGround()) {
                               client.player.jumpFromGround();
                           }
                       } 
-                      else if (GrimConfig.INSTANCE.mode == 3) {
-                          if (client.player.horizontalCollision && client.player.onGround()) {
-                              if (client.options.keyJump.isDown()) {
+                      else if (GrimConfig.INSTANCE.mode == 3) { 
+                          if (client.player.horizontalCollision && client.options.keyJump.isDown()) {
+                              if (client.player.onGround()) {
                                   client.player.jumpFromGround();
+                              } else {
+                                  if (client.player.getDeltaMovement().y < 0.42) {
+                                      client.player.setDeltaMovement(new Vec3(client.player.getDeltaMovement().x, 0.42, client.player.getDeltaMovement().z));
+                                  }
+                              }
+                          }
+                      }
+                      else if (GrimConfig.INSTANCE.mode == 4) { 
+                          // ФЛАГОВЫЙ FLY (DESYNC HOVER)
+                          // Мы говорим серверу, что мы на земле (onGround = true), даже если мы в воздухе.
+                          // Grim видит, что мы не падаем, и думает, что под нами блок.
+                          if (!client.player.onGround()) {
+                              client.player.setOnGround(true);
+                              // Обнуляем падение (Y = 0), чтобы мы зависли
+                              client.player.setDeltaMovement(new Vec3(
+                                  client.player.getDeltaMovement().x,
+                                  0.0,
+                                  client.player.getDeltaMovement().z
+                              ));
+                              
+                              // Если жмем пробел - летим вверх, если шифт - вниз
+                              if (client.options.keyJump.isDown()) {
+                                  client.player.setDeltaMovement(new Vec3(
+                                      client.player.getDeltaMovement().x,
+                                      0.1, // Медленный подъем
+                                      client.player.getDeltaMovement().z
+                                  ));
+                              } else if (client.options.keyShift.isDown()) {
+                                  client.player.setDeltaMovement(new Vec3(
+                                      client.player.getDeltaMovement().x,
+                                      -0.1, // Медленный спуск
+                                      client.player.getDeltaMovement().z
+                                  ));
                               }
                           }
                       }
@@ -283,15 +307,16 @@ jobs:
               protected void init() {
                   this.clearWidgets();
                   int x = this.width / 2 - 120;
-                  int y = this.height / 2 - 70;
+                  int y = this.height / 2 - 80;
                   String[] names = {
                       "Blink 150ms (Safe)",
                       "Blink 300ms (Risky)",
                       "Head-Hitting (Auto)",
-                      "Spider (Wall Climb)"
+                      "Spider (Wall Climb)",
+                      "Desync Fly (Hover)"
                   };
 
-                  for (int i = 0; i < 4; i++) {
+                  for (int i = 0; i < 5; i++) {
                       final int mode = i;
                       String btnText = (GrimConfig.INSTANCE.mode == i ? "§a" : "§7") + names[i];
                       this.addRenderableWidget(Button.builder(Component.literal(btnText), b -> {
@@ -305,8 +330,8 @@ jobs:
               @Override
               public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
                   this.renderBackground(context, mouseX, mouseY, delta);
-                  context.drawCenteredString(this.font, "§l§bGrim/Polar Bypasses", this.width / 2, this.height / 2 - 90, 0xFFFFFF);
-                  context.drawCenteredString(this.font, "§7Status: " + (GrimConfig.INSTANCE.enabled ? "§aENABLED" : "§cDISABLED"), this.width / 2, this.height / 2 - 75, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§l§bGrim/Polar Bypasses", this.width / 2, this.height / 2 - 100, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§7Status: " + (GrimConfig.INSTANCE.enabled ? "§aENABLED" : "§cDISABLED"), this.width / 2, this.height / 2 - 85, 0xFFFFFF);
                   super.render(context, mouseX, mouseY, delta);
               }
 
@@ -323,4 +348,4 @@ jobs:
           name: gotoviy-mod
           path: | 
             build/libs/*.jar
-            !build/libs/*-sources.jar
+            !build/libs*-sources.jar
