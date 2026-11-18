@@ -11,7 +11,7 @@ jobs:
       - name: Build Mod Sources
         run: |
           sed -i 's/"fabricloader": "[^"]*"/"fabricloader": ">=0.16.0"/g' src/main/resources/fabric.mod.json
-          sed -i 's/com.example.client.TemplateModClient/com.example.client.SpiderModClient/g' src/main/resources/fabric.mod.json
+          sed -i 's/com.example.client.TemplateModClient/com.example.client.NetworkBypassClient/g' src/main/resources/fabric.mod.json
           
           cat << 'EOF' > src/client/resources/template-mod.client.mixins.json
           {
@@ -32,7 +32,7 @@ jobs:
           mkdir -p src/client/java/com/example/client
           
           # КОНФИГ
-          cat << 'EOF' > src/client/java/com/example/client/SpiderConfig.java
+          cat << 'EOF' > src/client/java/com/example/client/BypassConfig.java
           package com.example.client;
 
           import com.google.gson.Gson;
@@ -42,12 +42,12 @@ jobs:
           import java.io.FileReader;
           import java.io.FileWriter;
 
-          public class SpiderConfig {
-              private static final File FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "spider-mod.json");
-              public int mode = 0; // 0 = Vanilla, 1 = Grim, 2 = Polar, 3 = Elytra
+          public class BypassConfig {
+              private static final File FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), "network-bypass.json");
+              public int mode = 0; 
               public boolean enabled = false;
 
-              public static SpiderConfig INSTANCE = new SpiderConfig();
+              public static BypassConfig INSTANCE = new BypassConfig();
 
               public static void save() {
                   try (FileWriter w = new FileWriter(FILE)) { new GsonBuilder().setPrettyPrinting().create().toJson(INSTANCE, w); } catch (Exception ignored) {}
@@ -55,7 +55,7 @@ jobs:
               public static void load() {
                   if (FILE.exists()) {
                       try (FileReader r = new FileReader(FILE)) {
-                          SpiderConfig l = new Gson().fromJson(r, SpiderConfig.class);
+                          BypassConfig l = new Gson().fromJson(r, BypassConfig.class);
                           if (l != null) INSTANCE = l;
                       } catch (Exception ignored) {}
                   }
@@ -63,8 +63,8 @@ jobs:
           }
           EOF
 
-          # ГЛАВНЫЙ КЛАСС
-          cat << 'EOF' > src/client/java/com/example/client/SpiderModClient.java
+          # ЛОГИКА ОБХОДОВ
+          cat << 'EOF' > src/client/java/com/example/client/NetworkBypassClient.java
           package com.example.client;
 
           import com.mojang.blaze3d.platform.InputConstants;
@@ -73,75 +73,118 @@ jobs:
           import net.minecraft.client.Minecraft;
           import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
           import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
+          import net.minecraft.network.protocol.game.ServerboundMoveVehiclePacket;
           import net.minecraft.sounds.SoundEvents;
           import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
 
-          public class SpiderModClient implements ClientModInitializer {
+          import java.util.ArrayDeque;
+          import java.util.Queue;
+
+          public class NetworkBypassClient implements ClientModInitializer {
               private static boolean xKeyWasDown = false;
               private static boolean rCtrlWasDown = false;
-              private static int tickTimer = 0;
+              
+              // Для Blink и Timer
+              private static int timerBalance = 0;
+              private static int tickCounter = 0;
+              private static Queue<Vec3> blinkQueue = new ArrayDeque<>();
 
               @Override
               public void onInitializeClient() {
-                  SpiderConfig.load();
+                  BypassConfig.load();
 
                   ClientTickEvents.END_CLIENT_TICK.register(client -> {
                       if (client.player == null || client.getWindow() == null) return;
                       long win = client.getWindow().getWindow();
+                      tickCounter++;
 
-                      // Right Ctrl - Меню
+                      // Меню
                       boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
-                          if (client.screen instanceof SpiderScreen) client.setScreen(null);
-                          else if (client.screen == null) client.setScreen(new SpiderScreen());
+                          if (client.screen instanceof NetworkBypassScreen) client.setScreen(null);
+                          else if (client.screen == null) client.setScreen(new NetworkBypassScreen());
                       }
                       rCtrlWasDown = rCtrl;
 
                       // X - Вкл/Выкл
                       boolean xDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_X);
                       if (xDown && !xKeyWasDown && client.screen == null) {
-                          SpiderConfig.INSTANCE.enabled = !SpiderConfig.INSTANCE.enabled;
-                          client.player.playSound(SpiderConfig.INSTANCE.enabled ? SoundEvents.EXPERIENCE_ORB_PICKUP : SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
-                          SpiderConfig.save();
+                          BypassConfig.INSTANCE.enabled = !BypassConfig.INSTANCE.enabled;
+                          client.player.playSound(BypassConfig.INSTANCE.enabled ? SoundEvents.EXPERIENCE_ORB_PICKUP : SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
+                          BypassConfig.save();
+                          
+                          // Сброс таймеров при выключении
+                          if (!BypassConfig.INSTANCE.enabled) {
+                              client.timer.msPerTick = 50.0f;
+                              blinkQueue.clear();
+                              timerBalance = 0;
+                          }
                       }
                       xKeyWasDown = xDown;
 
-                      if (!SpiderConfig.INSTANCE.enabled || client.screen != null) return;
+                      if (!BypassConfig.INSTANCE.enabled || client.screen != null) return;
 
-                      // Логика Спайдера
-                      if (client.player.horizontalCollision && client.options.keyJump.isDown()) {
-                          tickTimer++;
-                          
-                          switch (SpiderConfig.INSTANCE.mode) {
-                              case 0: // Vanilla Spam (Bypass NCP)
-                                  client.player.setDeltaMovement(0, 0.42, 0);
-                                  client.player.connection.send(new ServerboundMovePlayerPacket.Pos(client.player.getX(), client.player.getY() + 0.42, client.player.getZ(), true, false));
-                                  break;
-                                  
-                              case 1: // Grim Bypass (Fake Ground)
-                                  // Отправляем фейковый прыжок с земли
-                                  client.player.setDeltaMovement(0, 0.35, 0);
-                                  client.player.connection.send(new ServerboundMovePlayerPacket.Pos(client.player.getX(), client.player.getY() + 0.35, client.player.getZ(), true, client.player.horizontalCollision));
-                                  break;
-                                  
-                              case 2: // Polar Bypass (Micro-Jumps)
-                                  if (tickTimer % 2 == 0) {
-                                      client.player.setDeltaMovement(0, 0.28, 0);
-                                      client.player.connection.send(new ServerboundMovePlayerPacket.Rot(client.player.getYRot(), client.player.getXRot(), true, false));
+                      // Логика методов
+                      switch (BypassConfig.INSTANCE.mode) {
+                          case 0: // Timer Balance (Grim bypass)
+                              // Накапливаем баланс, замедляясь, потом тратим его
+                              if (timerBalance < 20) {
+                                  client.timer.msPerTick = 60.0f; // Замедление
+                                  timerBalance++;
+                              } else {
+                                  client.timer.msPerTick = 33.3f; // Ускорение
+                                  timerBalance--;
+                              }
+                              break;
+
+                          case 1: // Elytra Desync (Race Condition)
+                              if (tickCounter % 5 == 0) {
+                                  // Отправляем пакет полета
+                                  client.player.connection.send(new ServerboundPlayerCommandPacket(client.player, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING));
+                                  // Сразу отправляем пакет "я на земле"
+                                  client.player.connection.send(new ServerboundMovePlayerPacket.Pos(client.player.getX(), client.player.getY() - 0.1, client.player.getZ(), true, false));
+                              }
+                              break;
+
+                          case 2: // Head Hitting (2-block ceiling)
+                              if (client.level.getBlockState(client.player.blockPosition().above(2)).isSolid() && client.player.onGround()) {
+                                  client.player.jumpFromGround();
+                              }
+                              break;
+
+                          case 3: // Blink (Ping Spoof)
+                              // Сохраняем пакеты 3 тика
+                              if (tickCounter % 3 == 0) {
+                                  if (blinkQueue.size() < 3) {
+                                      blinkQueue.add(client.player.position());
+                                      // Останавливаем клиент на месте (визуально)
+                                      client.player.setDeltaMovement(0, client.player.getDeltaMovement().y, 0);
+                                  } else {
+                                      // Выпускаем накопленное (телепорт)
+                                      while (!blinkQueue.isEmpty()) {
+                                          Vec3 pos = blinkQueue.poll();
+                                          client.player.connection.send(new ServerboundMovePlayerPacket.Pos(pos.x, pos.y, pos.z, client.player.onGround(), false));
+                                      }
                                   }
-                                  break;
-                                  
-                              case 3: // Elytra Spoof
-                                  if (tickTimer % 10 == 0) {
-                                      client.player.connection.send(new ServerboundPlayerCommandPacket(client.player, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING));
-                                  }
-                                  client.player.setDeltaMovement(0, 0.3, 0);
-                                  break;
-                          }
-                          client.player.fallDistance = 0;
-                      } else {
-                          tickTimer = 0;
+                              }
+                              break;
+
+                          case 4: // Vehicle Spoof (Boat/Lava)
+                              if (client.player.getVehicle() != null && client.player.getVehicle().isControlledByLocalInstance()) {
+                                  // Отправляем серверу пакет, что лодка едет быстрее
+                                  Vec3 mot = client.player.getVehicle().getDeltaMovement();
+                                  client.player.connection.send(new ServerboundMoveVehiclePacket(client.player.getVehicle().position().add(mot.scale(1.5)), client.player.getVehicle().getYRot(), client.player.getVehicle().getXRot(), false));
+                              }
+                              break;
+
+                          case 5: // Diagonal AABB Strafe
+                              if (client.player.onGround() && client.options.keyUp.isDown()) {
+                                  // Принудительный прыжок под углом 45 градусов
+                                  client.player.setYRot(client.player.getYRot() % 45); 
+                                  client.player.jumpFromGround();
+                              }
+                              break;
                       }
                   });
               }
@@ -149,7 +192,7 @@ jobs:
           EOF
 
           # МЕНЮ
-          cat << 'EOF' > src/client/java/com/example/client/SpiderScreen.java
+          cat << 'EOF' > src/client/java/com/example/client/NetworkBypassScreen.java
           package com.example.client;
 
           import net.minecraft.client.gui.GuiGraphics;
@@ -157,32 +200,39 @@ jobs:
           import net.minecraft.client.gui.screens.Screen;
           import net.minecraft.network.chat.Component;
 
-          public class SpiderScreen extends Screen {
-              public SpiderScreen() { super(Component.literal("Spider Bypasses")); }
+          public class NetworkBypassScreen extends Screen {
+              public NetworkBypassScreen() { super(Component.literal("Network Bypasses")); }
 
               @Override
               protected void init() {
                   this.clearWidgets();
-                  int x = this.width / 2 - 100;
-                  int y = this.height / 2 - 40;
-                  String[] names = {"Vanilla Spam", "Grim (Fake Ground)", "Polar (Micro-Jumps)", "Elytra Spoof"};
+                  int x = this.width / 2 - 120;
+                  int y = this.height / 2 - 80;
+                  String[] names = {
+                      "Timer Balance (Grim)",
+                      "Elytra Desync",
+                      "Head Hitting",
+                      "Blink (Ping Spoof)",
+                      "Vehicle Spoof",
+                      "Diagonal Strafe"
+                  };
 
-                  for (int i = 0; i < 4; i++) {
+                  for (int i = 0; i < 6; i++) {
                       final int mode = i;
-                      String btnText = (SpiderConfig.INSTANCE.mode == i ? "§a" : "§7") + names[i];
+                      String btnText = (BypassConfig.INSTANCE.mode == i ? "§a" : "§7") + names[i];
                       this.addRenderableWidget(Button.builder(Component.literal(btnText), b -> {
-                          SpiderConfig.INSTANCE.mode = mode;
-                          SpiderConfig.save();
+                          BypassConfig.INSTANCE.mode = mode;
+                          BypassConfig.save();
                           this.init();
-                      }).bounds(x, y + (i * 25), 200, 20).build());
+                      }).bounds(x, y + (i * 25), 240, 20).build());
                   }
               }
 
               @Override
               public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
                   this.renderBackground(context, mouseX, mouseY, delta);
-                  context.drawCenteredString(this.font, "§l§bSpider Methods §7(X to toggle)", this.width / 2, this.height / 2 - 60, 0xFFFFFF);
-                  context.drawCenteredString(this.font, "§7Status: " + (SpiderConfig.INSTANCE.enabled ? "§aENABLED" : "§cDISABLED"), this.width / 2, this.height / 2 - 45, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§l§bNetwork Desync Bypasses", this.width / 2, this.height / 2 - 100, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§7Status: " + (BypassConfig.INSTANCE.enabled ? "§aENABLED" : "§cDISABLED"), this.width / 2, this.height / 2 - 85, 0xFFFFFF);
                   super.render(context, mouseX, mouseY, delta);
               }
 
