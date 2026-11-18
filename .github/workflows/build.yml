@@ -12,7 +12,6 @@ jobs:
       
       - name: Configure Project
         run: |
-          # ИСПРАВЛЕНО: Ставим точную версию игры
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21.8/' gradle.properties
 
@@ -66,17 +65,24 @@ jobs:
 
           public class MainClient implements ClientModInitializer {
               public static boolean killAuraEnabled = false;
-              public static boolean autoTune = false;
+              public static boolean autoSprint = true;
               public static boolean moveCorrection = true;
               public static double range = 3.0;
-              public static float fov = 360.0f;
+              public static float fov = 180.0f; // Ограничение угла обзора
+              public static int sprintResetDelay = 1; // Задержка сброса спринта (в тиках)
 
               private static boolean xKeyWasDown = false;
               private static boolean rCtrlWasDown = false;
 
+              // Переменные ротации
               private static float lastYaw = 0;
               private static float lastPitch = 0;
-              private static float accel = 0;
+              private static float currentYaw = 0;
+              private static float currentPitch = 0;
+              
+              // Стейт-машина для спринт-ресета
+              private static int sprintResetState = 0; // 0 - ждем, 1 - сбросили, 2 - бьем
+              private static int sprintTimer = 0;
               private static int attackCooldown = 0;
 
               @Override
@@ -85,6 +91,7 @@ jobs:
                       if (client.player == null || client.getWindow() == null || client.level == null) return;
                       long win = client.getWindow().getWindow();
 
+                      // Меню
                       boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
                           if (client.screen instanceof GuiScreen) client.setScreen(null);
@@ -92,53 +99,51 @@ jobs:
                       }
                       rCtrlWasDown = rCtrl;
 
+                      // Вкл/Выкл
                       boolean xDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_X);
                       if (xDown && !xKeyWasDown && client.screen == null) {
                           killAuraEnabled = !killAuraEnabled;
                           playSound(killAuraEnabled);
                           if (!killAuraEnabled) {
-                              lastYaw = client.player.getYRot();
-                              lastPitch = client.player.getXRot();
+                              currentYaw = client.player.getYRot();
+                              currentPitch = client.player.getXRot();
                           }
                       }
                       xKeyWasDown = xDown;
 
+                      // АВТО-СПРИНТ (Если зажат W и L-Ctrl)
+                      if (autoSprint && client.options.keyUp.isDown() && client.options.keyLeftControl.isDown()) {
+                          client.player.setSprinting(true);
+                      }
+
                       if (!killAuraEnabled) return;
 
-                      float gcdMult = autoTune ? 0.3f + (System.currentTimeMillis() % 1000) / 1000.0f : 1.0f;
-                      float speedMult = autoTune ? 0.5f + (System.currentTimeMillis() % 500) / 500.0f : 1.0f;
-
+                      // Поиск цели
                       double closestDist = range;
                       Entity target = null;
                       Vec3 eyePos = client.player.getEyePosition();
 
                       for (Entity entity : client.level.getEntities(client.player, client.player.getBoundingBox().inflate(range))) {
                           if (entity instanceof LivingEntity living && living != client.player && living.isAlive()) {
-                              Vec3 targetVec = living.getEyePosition().subtract(eyePos).normalize();
-                              Vec3 lookVec = client.player.getViewVector(1.0f);
-                              double angle = Math.toDegrees(Math.acos(lookVec.dot(targetVec)));
+                              // Проверка на видимость (сквозь стены не бьем)
+                              if (!client.player.hasLineOfSight(living)) continue;
 
-                              if (angle <= fov / 2.0) {
-                                  double dist = client.player.distanceTo(living);
-                                  if (dist <= closestDist) {
-                                      closestDist = dist;
-                                      target = living;
-                                  }
+                              double dist = client.player.distanceTo(living);
+                              if (dist <= closestDist) {
+                                  closestDist = dist;
+                                  target = living;
                               }
                           }
                       }
 
                       if (target != null) {
-                          Vec3 targetPos = target.position();
-                          if (moveCorrection) {
-                              targetPos = targetPos.add(target.getDeltaMovement().scale(2.0));
-                          }
-                          
+                          // 1. Ближайшая точка на хитбоксе
                           AABB box = target.getBoundingBox();
-                          double targetX = Mth.clamp(targetPos.x, box.minX, box.maxX);
-                          double targetY = Mth.clamp(targetPos.y + target.getBbHeight() / 2.0, box.minY, box.maxY);
-                          double targetZ = Mth.clamp(targetPos.z, box.minZ, box.maxZ);
+                          double targetX = Mth.clamp(eyePos.x, box.minX, box.maxX);
+                          double targetY = Mth.clamp(eyePos.y + (target.getBbHeight() * 0.5), box.minY, box.maxY);
+                          double targetZ = Mth.clamp(eyePos.z, box.minZ, box.maxZ);
 
+                          // 2. Вычисление углов
                           double dx = targetX - eyePos.x;
                           double dy = targetY - eyePos.y;
                           double dz = targetZ - eyePos.z;
@@ -147,39 +152,70 @@ jobs:
                           float targetYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0F);
                           float targetPitch = (float) (-Math.toDegrees(Math.atan2(dy, dist2D)));
 
-                          float deltaYaw = Mth.wrapDegrees(targetYaw - lastYaw);
-                          float deltaPitch = targetPitch - lastPitch;
+                          // 3. Проверка FOV (Смотрим ли мы на цель)
+                          float yawDiff = Math.abs(Mth.wrapDegrees(targetYaw - client.player.getYRot()));
+                          if (yawDiff > fov / 2.0f) return; // Не смотрим - не бьем
 
-                          float distToTarget = (float) Math.sqrt(deltaYaw * deltaYaw + deltaPitch * deltaPitch);
-                          accel = Math.max(0.05f, Math.min(1.0f, (distToTarget / 30.0f) * speedMult));
+                          // 4. ПЛАВНАЯ РОТАЦИЯ (Античит-байпас)
+                          float deltaYaw = Mth.wrapDegrees(targetYaw - currentYaw);
+                          float deltaPitch = targetPitch - currentPitch;
 
-                          float newYaw = lastYaw + deltaYaw * accel;
-                          float newPitch = lastPitch + deltaPitch * accel;
+                          // Ограничиваем скорость поворота (30 градусов за тик макс)
+                          float maxStep = 30.0f;
+                          float yawStep = Mth.clamp(deltaYaw, -maxStep, maxStep);
+                          float pitchStep = Mth.clamp(deltaPitch, -maxStep, maxStep);
 
-                          float gcd = getGCD() * gcdMult;
-                          newYaw -= (newYaw - lastYaw) % gcd;
-                          newPitch -= (newPitch - lastPitch) % gcd;
+                          // GCD (Шаги мыши, как у реального игрока)
+                          float gcd = getGCD();
+                          yawStep -= yawStep % gcd;
+                          pitchStep -= pitchStep % gcd;
 
-                          client.player.setYRot(newYaw);
-                          client.player.setXRot(newPitch);
-                          lastYaw = newYaw;
-                          lastPitch = newPitch;
+                          currentYaw += yawStep;
+                          currentPitch += pitchStep;
 
+                          // Применяем поворот
+                          client.player.setYRot(currentYaw);
+                          client.player.setXRot(currentPitch);
+
+                          // 5. ЛОГИКА СПРИНТ-РЕСЕТА И УДАРА
                           if (attackCooldown > 0) {
                               attackCooldown--;
                           } else {
-                              if (client.player.getAttackStrengthScale(0.5F) >= 1.0F) {
-                                  if (!client.player.onGround() && client.player.fallDistance > 0.0F && client.player.getDeltaMovement().y < 0) {
-                                      client.gameMode.attack(client.player, target);
-                                      client.player.swing(InteractionHand.MAIN_HAND);
-                                      client.player.resetAttackStrengthTicker(); 
-                                      attackCooldown = 2; 
+                              if (sprintResetState == 0) {
+                                  // Начинаем сброс спринта
+                                  client.player.setSprinting(false);
+                                  sprintResetState = 1;
+                                  sprintTimer = sprintResetDelay;
+                              } else if (sprintResetState == 1) {
+                                  if (sprintTimer > 0) {
+                                      sprintTimer--;
+                                  } else {
+                                      // Бьем!
+                                      if (client.player.getAttackStrengthScale(0.5F) >= 1.0F && (!client.player.onGround() && client.player.fallDistance > 0.0F)) {
+                                          client.gameMode.attack(client.player, target);
+                                          client.player.swing(InteractionHand.MAIN_HAND);
+                                          client.player.resetAttackStrengthTicker(); // Быстрый крит
+                                          attackCooldown = 2; // Кулдаун между ударами
+                                      }
+                                      sprintResetState = 2;
                                   }
+                              } else if (sprintResetState == 2) {
+                                  // Возвращаем спринт
+                                  if (autoSprint && client.options.keyUp.isDown()) {
+                                      client.player.setSprinting(true);
+                                  }
+                                  sprintResetState = 0;
                               }
+                          }
+                      } else {
+                          sprintResetState = 0; // Сброс, если нет цели
+                          if (autoSprint && client.options.keyUp.isDown() && client.options.keyLeftControl.isDown()) {
+                              client.player.setSprinting(true);
                           }
                       }
                   });
 
+                  // Рендер ХП (Оставляем как было)
                   WorldRenderEvents.AFTER_ENTITIES.register(context -> {
                       if (!killAuraEnabled) return;
                       var matrices = context.matrixStack();
@@ -196,7 +232,6 @@ jobs:
                                   matrices.scale(-0.025F, -0.025F, 0.025F);
                                   
                                   float realHp = getRealHealth(living);
-                                  
                                   net.minecraft.network.chat.Component textComp = net.minecraft.network.chat.Component.literal(String.format("§c%.1f ❤", realHp));
                                   
                                   Minecraft.getInstance().font.drawInBatch(
@@ -262,40 +297,40 @@ jobs:
               @Override
               protected void init() {
                   int x = width / 2 - 100;
-                  int y = height / 2 - 60;
+                  int y = height / 2 - 70;
 
                   this.addRenderableWidget(Button.builder(Component.literal("KillAura: " + (MainClient.killAuraEnabled ? "§aON" : "§cOFF")), b -> {
                       MainClient.killAuraEnabled = !MainClient.killAuraEnabled;
                       b.setMessage(Component.literal("KillAura: " + (MainClient.killAuraEnabled ? "§aON" : "§cOFF")));
                   }).bounds(x, y, 200, 20).build());
 
+                  this.addRenderableWidget(Button.builder(Component.literal("Auto Sprint: " + (MainClient.autoSprint ? "§aON" : "§cOFF")), b -> {
+                      MainClient.autoSprint = !MainClient.autoSprint;
+                      b.setMessage(Component.literal("Auto Sprint: " + (MainClient.autoSprint ? "§aON" : "§cOFF")));
+                  }).bounds(x, y + 25, 200, 20).build());
+
+                  this.addRenderableWidget(Button.builder(Component.literal("Sprint Reset Delay: " + MainClient.sprintResetDelay + " ticks"), b -> {
+                      MainClient.sprintResetDelay = (MainClient.sprintResetDelay + 1) % 4;
+                      b.setMessage(Component.literal("Sprint Reset Delay: " + MainClient.sprintResetDelay + " ticks"));
+                  }).bounds(x, y + 50, 200, 20).build());
+
                   this.addRenderableWidget(Button.builder(Component.literal("Range: " + MainClient.range), b -> {
                       MainClient.range += 0.5;
                       if (MainClient.range > 6.0) MainClient.range = 3.0;
                       b.setMessage(Component.literal("Range: " + MainClient.range));
-                  }).bounds(x, y + 25, 200, 20).build());
+                  }).bounds(x, y + 75, 200, 20).build());
 
                   this.addRenderableWidget(Button.builder(Component.literal("FOV: " + MainClient.fov + "°"), b -> {
                       MainClient.fov += 30;
-                      if (MainClient.fov > 360) MainClient.fov = 180;
+                      if (MainClient.fov > 360) MainClient.fov = 60;
                       b.setMessage(Component.literal("FOV: " + MainClient.fov + "°"));
-                  }).bounds(x, y + 50, 200, 20).build());
-
-                  this.addRenderableWidget(Button.builder(Component.literal("Correction: " + (MainClient.moveCorrection ? "§aON" : "§cOFF")), b -> {
-                      MainClient.moveCorrection = !MainClient.moveCorrection;
-                      b.setMessage(Component.literal("Correction: " + (MainClient.moveCorrection ? "§aON" : "§cOFF")));
-                  }).bounds(x, y + 75, 200, 20).build());
-
-                  this.addRenderableWidget(Button.builder(Component.literal("Auto-Tune: " + (MainClient.autoTune ? "§aON" : "§cOFF")), b -> {
-                      MainClient.autoTune = !MainClient.autoTune;
-                      b.setMessage(Component.literal("Auto-Tune: " + (MainClient.autoTune ? "§aON" : "§cOFF")));
                   }).bounds(x, y + 100, 200, 20).build());
               }
 
               @Override
               public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
                   this.renderBackground(context, mouseX, mouseY, delta);
-                  context.drawCenteredString(this.font, "§l§bKillAura Bypass Menu", this.width / 2, this.height / 2 - 80, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§l§bKillAura Settings", this.width / 2, this.height / 2 - 90, 0xFFFFFF);
                   super.render(context, mouseX, mouseY, delta);
               }
               
