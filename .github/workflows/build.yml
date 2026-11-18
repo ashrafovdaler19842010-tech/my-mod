@@ -21,17 +21,17 @@ jobs:
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
-            "id": "custommod",
+            "id": "triggerbot",
             "version": "1.0.0",
-            "name": "Custom Mod",
-            "description": "Mod built from custom sources",
+            "name": "Trigger Bot",
+            "description": "Simple trigger bot for players only.",
             "authors": ["You"],
             "contact": {},
             "license": "MIT",
             "environment": "client",
             "entrypoints": {
               "client": [
-                "com.example.client.MainClient"
+                "com.example.client.TriggerBotClient"
               ]
             },
             "depends": {
@@ -45,58 +45,30 @@ jobs:
 
           mkdir -p src/client/java/com/example/client
 
-          # --- ГЕНЕРАЦИЯ MainClient.java ---
-          cat << 'EOF' > src/client/java/com/example/client/MainClient.java
+          # --- ГЕНЕРАЦИЯ TriggerBotClient.java ---
+          cat << 'EOF' > src/client/java/com/example/client/TriggerBotClient.java
           package com.example.client;
 
           import com.mojang.blaze3d.platform.InputConstants;
           import net.fabricmc.api.ClientModInitializer;
           import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-          import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
           import net.minecraft.client.Minecraft;
           import net.minecraft.sounds.SoundEvents;
-          import net.minecraft.util.Mth;
           import net.minecraft.world.InteractionHand;
           import net.minecraft.world.entity.Entity;
-          import net.minecraft.world.entity.LivingEntity;
-          import net.minecraft.world.phys.AABB;
-          import net.minecraft.world.phys.Vec3;
+          import net.minecraft.world.entity.player.Player;
           import org.lwjgl.glfw.GLFW;
 
-          import java.util.Random;
-
-          public class MainClient implements ClientModInitializer {
-              public static boolean killAuraEnabled = false;
-              public static boolean autoSprint = true;
-              public static boolean moveCorrection = true;
-              
-              // Настройки (раздельные радиусы)
-              public static double searchRange = 5.0; // Радиус поиска цели (3-6)
-              public static float fov = 180.0f; // Угол обзора
-              public static int sprintResetMs = 40; // Задержка сброса спринта в мс
-              
-              // Настройки ротации (Saccadic Engine)
-              public static float yawSpeed = 180.0f;
-              public static float pitchSpeed = 60.0f; // Y в 3 раза медленнее
-              public static float smoothing = 0.65f; // Плавность (0.1 - 1.0)
-              public static float jitter = 0.15f; // Дрожание
-              
-              // Аим-поинты
-              public static boolean dynamicAimPoints = true;
-              public static boolean aimAtHead = false;
+          public class TriggerBotClient implements ClientModInitializer {
+              // Настройки
+              public static boolean enabled = false;
+              public static boolean onlyCrits = true;
+              public static int delayMs = 50; // Задержка между ударами в мс
+              public static float range = 3.0f;
 
               private static boolean xKeyWasDown = false;
               private static boolean rCtrlWasDown = false;
-
-              private static float currentYaw = 0;
-              private static float currentPitch = 0;
-              private static final Random random = new Random();
-              
-              // Стейт-машина спринта (в мс)
               private static long lastAttackTime = 0;
-              private static int sprintResetState = 0; 
-              private static long sprintResetStartTime = 0;
-              private static int attackCooldown = 0;
 
               @Override
               public void onInitializeClient() {
@@ -105,209 +77,60 @@ jobs:
                       long win = client.getWindow().getWindow();
                       long currentTime = System.currentTimeMillis();
 
-                      // Меню (Right Ctrl)
+                      // Открытие меню (Right Ctrl)
                       boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
-                          if (client.screen instanceof GuiScreen) client.setScreen(null);
-                          else if (client.screen == null) client.setScreen(new GuiScreen());
+                          if (client.screen instanceof TriggerBotScreen) client.setScreen(null);
+                          else if (client.screen == null) client.setScreen(new TriggerBotScreen());
                       }
                       rCtrlWasDown = rCtrl;
 
-                      // Вкл/Выкл (X)
+                      // Включение/Выключение (X)
                       boolean xDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_X);
                       if (xDown && !xKeyWasDown && client.screen == null) {
-                          killAuraEnabled = !killAuraEnabled;
-                          playSound(killAuraEnabled);
-                          if (!killAuraEnabled) {
-                              currentYaw = client.player.getYRot();
-                              currentPitch = client.player.getXRot();
+                          enabled = !enabled;
+                          if (enabled) {
+                              client.player.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                          } else {
+                              client.player.playSound(SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
                           }
                       }
                       xKeyWasDown = xDown;
 
-                      // АВТО-СПРИНТ (Если зажат W и keySprint)
-                      if (autoSprint && client.options.keyUp.isDown() && client.options.keySprint.isDown()) {
-                          client.player.setSprinting(true);
-                      }
+                      if (!enabled || client.gameMode == null) return;
 
-                      if (!killAuraEnabled) return;
+                      // Получаем сущность, на которую смотрит игрок (как в Meteor)
+                      Entity target = client.crosshairPickEntity;
 
-                      // Поиск цели
-                      double closestDist = searchRange;
-                      Entity target = null;
-                      Vec3 eyePos = client.player.getEyePosition();
+                      if (target != null && target instanceof Player && target != client.player && target.isAlive()) {
+                          // Проверка дистанции
+                          if (client.player.distanceTo(target) > range) return;
 
-                      for (Entity entity : client.level.getEntities(client.player, client.player.getBoundingBox().inflate(searchRange))) {
-                          if (entity instanceof LivingEntity living && living != client.player && living.isAlive()) {
-                              if (!client.player.hasLineOfSight(living)) continue; // Только если видим
-                              
-                              double dist = client.player.distanceTo(living);
-                              if (dist <= closestDist) {
-                                  closestDist = dist;
-                                  target = living;
+                          // Проверка на крит (если включено)
+                          if (onlyCrits) {
+                              if (client.player.onGround() || client.player.fallDistance <= 0.0f) {
+                                  return; // Не бьем, если не падаем
                               }
                           }
-                      }
 
-                      if (target != null) {
-                          // 1. Определение аим-поинта
-                          AABB box = target.getBoundingBox();
-                          double aimY = box.minY + (target.getBbHeight() * (aimAtHead ? 0.85 : 0.6)); // Голова или центр
-                          
-                          if (dynamicAimPoints) {
-                              // Рандомная точка в пределах хитбокса (чуть выше центра и ниже шеи)
-                              aimY = box.minY + (target.getBbHeight() * (0.55 + random.nextDouble() * 0.25));
-                          }
+                          // Проверка кулдауна атаки
+                          if (client.player.getAttackStrengthScale(0.5f) < 1.0f) return;
 
-                          double targetX = Mth.clamp(eyePos.x, box.minX + 0.05, box.maxX - 0.05);
-                          double targetY = Mth.clamp(aimY, box.minY + 0.05, box.maxY - 0.05);
-                          double targetZ = Mth.clamp(eyePos.z, box.minZ + 0.05, box.maxZ - 0.05);
+                          // Проверка задержки (в мс)
+                          if (currentTime - lastAttackTime < delayMs) return;
 
-                          // 2. Вычисление углов
-                          double dx = targetX - eyePos.x;
-                          double dy = targetY - eyePos.y;
-                          double dz = targetZ - eyePos.z;
-                          double dist2D = Math.sqrt(dx * dx + dz * dz);
-
-                          float targetYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0F);
-                          float targetPitch = (float) (-Math.toDegrees(Math.atan2(dy, dist2D)));
-
-                          // 3. Проверка FOV (Смотрим ли мы на цель)
-                          float yawDiff = Math.abs(Mth.wrapDegrees(targetYaw - client.player.getYRot()));
-                          if (yawDiff > fov / 2.0f) return;
-
-                          // 4. ПЛАВНАЯ РОТАЦИЯ (SACCADIC ENGINE)
-                          float deltaYaw = Mth.wrapDegrees(targetYaw - currentYaw);
-                          float deltaPitch = targetPitch - currentPitch;
-
-                          // Замедление по мере приближения (Smoothing)
-                          float distFactor = Math.max(0.15f, Math.min(1.0f, Math.abs(deltaYaw) / 30.0f));
-                          float yawStep = Mth.clamp(deltaYaw * smoothing * distFactor, -yawSpeed, yawSpeed);
-                          float pitchStep = Mth.clamp(deltaPitch * smoothing * distFactor, -pitchSpeed, pitchSpeed);
-
-                          // GCD (Шаги мыши)
-                          float gcd = getGCD();
-                          yawStep -= yawStep % gcd;
-                          pitchStep -= pitchStep % gcd;
-
-                          // Джиттер (Только при ударе, чтобы не резать глаза)
-                          if (attackCooldown == 0) {
-                              yawStep += (float) ((random.nextFloat() - 0.5) * jitter);
-                              pitchStep += (float) ((random.nextFloat() - 0.5) * jitter);
-                          }
-
-                          currentYaw += yawStep;
-                          currentPitch += pitchStep;
-
-                          client.player.setYRot(currentYaw);
-                          client.player.setXRot(currentPitch);
-
-                          // 5. ЛОГИКА W-TAP (SPRINT RESET) И УДАРА
-                          if (attackCooldown > 0) {
-                              attackCooldown--;
-                          } else {
-                              if (sprintResetState == 0) {
-                                  // Начинаем сброс спринта
-                                  client.player.setSprinting(false);
-                                  sprintResetState = 1;
-                                  sprintResetStartTime = currentTime;
-                              } else if (sprintResetState == 1) {
-                                  // Ждем заданное время в мс
-                                  if (currentTime - sprintResetStartTime >= sprintResetMs) {
-                                      // Бьем! (Только если в радиусе 3 блока и падаем для крита)
-                                      if (closestDist <= 3.0 && client.player.getAttackStrengthScale(0.5F) >= 1.0F && (!client.player.onGround() && client.player.fallDistance > 0.0F)) {
-                                          client.gameMode.attack(client.player, target);
-                                          client.player.swing(InteractionHand.MAIN_HAND);
-                                          client.player.resetAttackStrengthTicker();
-                                          attackCooldown = 2; // Кулдаун между ударами
-                                      }
-                                      sprintResetState = 2;
-                                  }
-                              } else if (sprintResetState == 2) {
-                                  // Возвращаем спринт
-                                  if (autoSprint && client.options.keyUp.isDown()) {
-                                      client.player.setSprinting(true);
-                                  }
-                                  sprintResetState = 0;
-                              }
-                          }
-                      } else {
-                          sprintResetState = 0;
-                          if (autoSprint && client.options.keyUp.isDown() && client.options.keySprint.isDown()) {
-                              client.player.setSprinting(true);
-                          }
+                          // БЬЕМ!
+                          client.gameMode.attack(client.player, target);
+                          client.player.swing(InteractionHand.MAIN_HAND);
+                          lastAttackTime = currentTime;
                       }
                   });
-
-                  // Рендер ХП
-                  WorldRenderEvents.AFTER_ENTITIES.register(context -> {
-                      if (!killAuraEnabled) return;
-                      var matrices = context.matrixStack();
-                      if (matrices == null) return;
-                      
-                      for (Entity entity : context.world().entitiesForRendering()) {
-                          if (entity instanceof LivingEntity living && living != Minecraft.getInstance().player && living.isAlive()) {
-                              double dist = Minecraft.getInstance().player.distanceTo(living);
-                              if (dist <= searchRange + 5) {
-                                  Vec3 pos = living.position().add(0, living.getBbHeight() + 0.4, 0);
-                                  matrices.pushPose();
-                                  matrices.translate(pos.x - context.camera().getPosition().x, pos.y - context.camera().getPosition().y, pos.z - context.camera().getPosition().z);
-                                  matrices.mulPose(Minecraft.getInstance().getEntityRenderDispatcher().cameraOrientation());
-                                  matrices.scale(-0.025F, -0.025F, 0.025F);
-                                  
-                                  float realHp = getRealHealth(living);
-                                  net.minecraft.network.chat.Component textComp = net.minecraft.network.chat.Component.literal(String.format("§c%.1f ❤", realHp));
-                                  
-                                  Minecraft.getInstance().font.drawInBatch(
-                                      textComp, 
-                                      -Minecraft.getInstance().font.width(textComp) / 2.0f, 
-                                      0, 
-                                      0xFFFFFF, 
-                                      false, 
-                                      matrices.last().pose(), 
-                                      context.consumers(), 
-                                      net.minecraft.client.gui.Font.DisplayMode.SEE_THROUGH, 
-                                      0, 
-                                      0xFFFFFFFF
-                                  );
-                                  matrices.popPose();
-                              }
-                          }
-                      }
-                  });
-              }
-
-              private static float getRealHealth(LivingEntity living) {
-                  var scoreboard = living.level().getScoreboard();
-                  var objective = scoreboard.getObjective("health");
-                  if (objective != null) {
-                      var score = scoreboard.getOrCreatePlayerScore(living, objective);
-                      if (score != null) {
-                          return score.get(); 
-                      }
-                  }
-                  return living.getHealth();
-              }
-
-              private float getGCD() {
-                  double sensitivity = Minecraft.getInstance().options.sensitivity().get();
-                  double f = sensitivity * 0.6 + 0.2;
-                  double gcd = f * f * f * 8.0 * 0.15;
-                  return (float) gcd;
-              }
-
-              private void playSound(boolean enabled) {
-                  Minecraft.getInstance().getSoundManager().play(
-                      net.minecraft.client.resources.sounds.SimpleSoundInstance.forUI(
-                          enabled ? SoundEvents.EXPERIENCE_ORB_PICKUP : SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f
-                      )
-                  );
               }
           }
           EOF
 
-          # --- ГЕНЕРАЦИЯ GuiScreen.java ---
-          cat << 'EOF' > src/client/java/com/example/client/GuiScreen.java
+          # --- ГЕНЕРАЦИЯ TriggerBotScreen.java ---
+          cat << 'EOF' > src/client/java/com/example/client/TriggerBotScreen.java
           package com.example.client;
 
           import net.minecraft.client.gui.GuiGraphics;
@@ -315,54 +138,41 @@ jobs:
           import net.minecraft.client.gui.screens.Screen;
           import net.minecraft.network.chat.Component;
 
-          public class GuiScreen extends Screen {
-              public GuiScreen() { super(Component.literal("KillAura Settings")); }
+          public class TriggerBotScreen extends Screen {
+              public TriggerBotScreen() { super(Component.literal("Trigger Bot Settings")); }
 
               @Override
               protected void init() {
-                  int x = width / 2 - 110;
-                  int y = height / 2 - 100;
+                  int x = width / 2 - 100;
+                  int y = height / 2 - 60;
 
-                  this.addRenderableWidget(Button.builder(Component.literal("KillAura: " + (MainClient.killAuraEnabled ? "§aON" : "§cOFF")), b -> {
-                      MainClient.killAuraEnabled = !MainClient.killAuraEnabled;
-                      b.setMessage(Component.literal("KillAura: " + (MainClient.killAuraEnabled ? "§aON" : "§cOFF")));
-                  }).bounds(x, y, 220, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal("Trigger Bot: " + (TriggerBotClient.enabled ? "§aON" : "§cOFF")), b -> {
+                      TriggerBotClient.enabled = !TriggerBotClient.enabled;
+                      b.setMessage(Component.literal("Trigger Bot: " + (TriggerBotClient.enabled ? "§aON" : "§cOFF")));
+                  }).bounds(x, y, 200, 20).build());
 
-                  this.addRenderableWidget(Button.builder(Component.literal("Search Range: " + MainClient.searchRange), b -> {
-                      MainClient.searchRange = MainClient.searchRange >= 6.0 ? 3.0 : MainClient.searchRange + 0.5;
-                      b.setMessage(Component.literal("Search Range: " + MainClient.searchRange));
-                  }).bounds(x, y + 25, 220, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal("Only Crits: " + (TriggerBotClient.onlyCrits ? "§aON" : "§cOFF")), b -> {
+                      TriggerBotClient.onlyCrits = !TriggerBotClient.onlyCrits;
+                      b.setMessage(Component.literal("Only Crits: " + (TriggerBotClient.onlyCrits ? "§aON" : "§cOFF")));
+                  }).bounds(x, y + 25, 200, 20).build());
 
-                  this.addRenderableWidget(Button.builder(Component.literal("FOV: " + MainClient.fov + "°"), b -> {
-                      MainClient.fov += 30;
-                      if (MainClient.fov > 360) MainClient.fov = 60;
-                      b.setMessage(Component.literal("FOV: " + MainClient.fov + "°"));
-                  }).bounds(x, y + 50, 220, 20).build());
-
-                  this.addRenderableWidget(Button.builder(Component.literal("Sprint Delay: " + MainClient.sprintResetMs + "ms"), b -> {
-                      MainClient.sprintResetMs += 10;
-                      if (MainClient.sprintResetMs > 100) MainClient.sprintResetMs = 20;
-                      b.setMessage(Component.literal("Sprint Delay: " + MainClient.sprintResetMs + "ms"));
-                  }).bounds(x, y + 75, 220, 20).build());
-
-                  this.addRenderableWidget(Button.builder(Component.literal("Randomize Settings"), b -> {
-                      MainClient.yawSpeed = 90.0f + (float)(Math.random() * 180.0f);
-                      MainClient.pitchSpeed = 30.0f + (float)(Math.random() * 90.0f);
-                      MainClient.smoothing = 0.3f + (float)(Math.random() * 0.6f);
-                      MainClient.jitter = 0.05f + (float)(Math.random() * 0.3f);
-                      this.init();
-                  }).bounds(x, y + 100, 220, 20).build());
-
-                  this.addRenderableWidget(Button.builder(Component.literal("Dynamic Aim Points: " + (MainClient.dynamicAimPoints ? "§aON" : "§cOFF")), b -> {
-                      MainClient.dynamicAimPoints = !MainClient.dynamicAimPoints;
-                      b.setMessage(Component.literal("Dynamic Aim Points: " + (MainClient.dynamicAimPoints ? "§aON" : "§cOFF")));
-                  }).bounds(x, y + 125, 220, 20).build());
+                  this.addRenderableWidget(Button.builder(Component.literal("Delay: " + TriggerBotClient.delayMs + "ms"), b -> {
+                      TriggerBotClient.delayMs += 10;
+                      if (TriggerBotClient.delayMs > 200) TriggerBotClient.delayMs = 10;
+                      b.setMessage(Component.literal("Delay: " + TriggerBotClient.delayMs + "ms"));
+                  }).bounds(x, y + 50, 200, 20).build());
+                  
+                  this.addRenderableWidget(Button.builder(Component.literal("Range: " + TriggerBotClient.range), b -> {
+                      TriggerBotClient.range += 0.5f;
+                      if (TriggerBotClient.range > 6.0f) TriggerBotClient.range = 3.0f;
+                      b.setMessage(Component.literal("Range: " + TriggerBotClient.range));
+                  }).bounds(x, y + 75, 200, 20).build());
               }
 
               @Override
               public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
                   this.renderBackground(context, mouseX, mouseY, delta);
-                  context.drawCenteredString(this.font, "§l§bKillAura Settings", this.width / 2, this.height / 2 - 120, 0xFFFFFF);
+                  context.drawCenteredString(this.font, "§l§bTrigger Bot Menu", this.width / 2, this.height / 2 - 80, 0xFFFFFF);
                   super.render(context, mouseX, mouseY, delta);
               }
               
