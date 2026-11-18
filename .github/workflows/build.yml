@@ -33,6 +33,8 @@ jobs:
 
           # Удаляем старый файл миксинов из main/resources во избежание конфликта
           rm -f src/main/resources/template-mod.mixins.json
+          # Удаляем старый КЛИЕНТСКИЙ файл миксинов (ссылается на ExampleClientMixin)
+          rm -f src/main/resources/template-mod.client.mixins.json
 
           # ДОБАВЛЕНО: Стратегия для дубликатов в jar и sourcesJar
           if ! grep -q "duplicatesStrategy" build.gradle; then
