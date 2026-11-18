@@ -39,32 +39,43 @@ public class BotConfigScreen extends Screen {
                     AuctionSniper.INSTANCE.toggleBot(this.client);
                     btn.setMessage(Text.literal(AuctionSniper.INSTANCE.isBotEnabled() ? "§aБот: ВКЛ" : "§cБот: ВЫКЛ"));
                 }
-        ).dimensions(centerX - 180, 14, 115, 20).build());
+        ).dimensions(centerX - 185, 14, 88, 20).build());
 
-        // 2. Кнопка Сканировать рынок сейчас
+        // 2. Кнопка Скан 100+100 страниц
         this.addDrawableChild(ButtonWidget.builder(
-                Text.literal("§bСкан цен (TAB)"),
+                Text.literal("§bСкан 200 стр."),
                 btn -> {
                     if (this.client != null) {
                         MarketScanner.INSTANCE.startFullScan(this.client);
                         this.close();
                     }
                 }
-        ).dimensions(centerX - 60, 14, 120, 20).build());
+        ).dimensions(centerX - 93, 14, 92, 20).build());
 
-        // 3. Кнопка выбора скорости
+        // 3. Кнопка Очистить базу
         this.addDrawableChild(ButtonWidget.builder(
-                Text.literal("Скорость: " + BotConfig.INSTANCE.speedMode.displayName),
+                Text.literal("§cОчистить"),
+                btn -> {
+                    BotConfig.INSTANCE.items.clear();
+                    BotConfig.save();
+                    this.scrollOffset = 0;
+                    rebuildItemList();
+                }
+        ).dimensions(centerX + 3, 14, 78, 20).build());
+
+        // 4. Кнопка выбора скорости
+        this.addDrawableChild(ButtonWidget.builder(
+                Text.literal("§e" + BotConfig.INSTANCE.speedMode.displayName),
                 btn -> {
                     BotConfig.INSTANCE.speedMode = BotConfig.INSTANCE.speedMode.next();
                     BotConfig.save();
-                    btn.setMessage(Text.literal("Скорость: " + BotConfig.INSTANCE.speedMode.displayName));
+                    btn.setMessage(Text.literal("§e" + BotConfig.INSTANCE.speedMode.displayName));
                 }
-        ).dimensions(centerX + 65, 14, 115, 20).build());
+        ).dimensions(centerX + 85, 14, 100, 20).build());
 
-        // 4. Ползунок процента покупки (от 1% до 100%)
+        // 5. Ползунок процента покупки (от 1% до 100%)
         double initialSliderVal = (BotConfig.INSTANCE.buyPercent - 1) / 99.0;
-        this.addDrawableChild(new SliderWidget(centerX - 180, 38, 360, 20,
+        this.addDrawableChild(new SliderWidget(centerX - 185, 38, 370, 20,
                 Text.literal("Покупать от цены: " + BotConfig.INSTANCE.buyPercent + "%"), initialSliderVal) {
             @Override
             protected void updateMessage() {
@@ -78,9 +89,9 @@ public class BotConfigScreen extends Screen {
             }
         });
 
-        // 5. Поле поиска по предметам
-        this.searchField = new TextFieldWidget(this.textRenderer, centerX - 180, 64, 360, 18, Text.literal("Поиск..."));
-        this.searchField.setPlaceholder(Text.literal("§7Поиск предмета (например: булыжник)..."));
+        // 6. Поле поиска по предметам
+        this.searchField = new TextFieldWidget(this.textRenderer, centerX - 185, 64, 370, 18, Text.literal("Поиск..."));
+        this.searchField.setPlaceholder(Text.literal("§7Поиск предмета (например: тростник, нагрудник)..."));
         this.searchField.setText(searchQuery);
         this.searchField.setChangedListener(text -> {
             this.searchQuery = text;
@@ -126,7 +137,7 @@ public class BotConfigScreen extends Screen {
 
             // Поле редактирования цены за 1 шт.
             TextFieldWidget priceField = new TextFieldWidget(
-                    this.textRenderer, centerX + 20, rowY, 95, 18, Text.literal("Цена")
+                    this.textRenderer, centerX + 25, rowY, 95, 18, Text.literal("Цена")
             );
             priceField.setText(String.valueOf(Math.round(itemData.unitPrice)));
             priceField.setChangedListener(val -> {
@@ -142,7 +153,7 @@ public class BotConfigScreen extends Screen {
             this.addDrawableChild(priceField);
             visiblePriceFields.add(priceField);
 
-            // Кнопка ВКЛ / ВЫКЛ для предмета (убрать булыжник и т.д.)
+            // Кнопка ВКЛ / ВЫКЛ для предмета
             ButtonWidget toggleBtn = ButtonWidget.builder(
                     Text.literal(itemData.enabled ? "§aВКЛ" : "§cВЫКЛ"),
                     btn -> {
@@ -150,7 +161,7 @@ public class BotConfigScreen extends Screen {
                         BotConfig.save();
                         btn.setMessage(Text.literal(itemData.enabled ? "§aВКЛ" : "§cВЫКЛ"));
                     }
-            ).dimensions(centerX + 122, rowY, 58, 18).build();
+            ).dimensions(centerX + 125, rowY, 60, 18).build();
             this.addDrawableChild(toggleBtn);
             visibleToggleButtons.add(toggleBtn);
         }
@@ -176,7 +187,12 @@ public class BotConfigScreen extends Screen {
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+        // Сначала рисуем фон и виджеты (кнопки и поля)
         super.render(context, mouseX, mouseY, delta);
+
+        // Затем поверх всех слоев (Z = 300) рисуем плашки и названия предметов
+        context.getMatrices().push();
+        context.getMatrices().translate(0, 0, 300.0f);
 
         int centerX = this.width / 2;
         int listBottom = this.height - 28;
@@ -185,7 +201,7 @@ public class BotConfigScreen extends Screen {
         if (filteredItems.isEmpty()) {
             context.drawCenteredTextWithShadow(
                     this.textRenderer,
-                    Text.literal("§7Предметов пока нет. Нажмите «Скан цен (TAB)»."),
+                    Text.literal("§7База пуста. Нажмите «Скан 200 стр.» или «Очистить»."),
                     centerX, LIST_TOP + 20, 0xAAAAAA
             );
         } else {
@@ -196,10 +212,13 @@ public class BotConfigScreen extends Screen {
                 BotConfig.ItemData itemData = filteredItems.get(dataIndex).getValue();
                 int rowY = LIST_TOP + i * ROW_HEIGHT;
 
-                String nameColor = itemData.enabled ? "§f" : "§8";
+                // Четкая темная подложка под название предмета
+                context.fill(centerX - 185, rowY, centerX + 20, rowY + 18, 0xCC111111);
+
+                String nameColor = itemData.enabled ? "§f" : "§7";
                 String displayName = itemData.displayName;
-                if (displayName.length() > 26) {
-                    displayName = displayName.substring(0, 26) + "...";
+                if (displayName.length() > 30) {
+                    displayName = displayName.substring(0, 30) + "...";
                 }
 
                 context.drawTextWithShadow(
@@ -215,6 +234,8 @@ public class BotConfigScreen extends Screen {
                 Text.literal("§7Всего предметов: " + filteredItems.size() + " | Статус: " + AuctionSniper.INSTANCE.getHudStatus()),
                 centerX, this.height - 16, 0xCCCCCC
         );
+
+        context.getMatrices().pop();
     }
 
     @Override
