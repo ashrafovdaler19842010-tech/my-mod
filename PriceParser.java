@@ -3,7 +3,9 @@ package com.auctionbot;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 import net.minecraft.item.tooltip.TooltipType;
+import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
 
 import java.util.List;
@@ -16,8 +18,25 @@ public class PriceParser {
             "(?i)(цена|price|стоимость|\\$|coins|монет)[^0-9]*([0-9][0-9\\s.,]*)"
     );
 
+    /**
+     * Проверяет, не является ли слот серой заглушкой уже купленного товара
+     */
+    public static boolean isSoldPlaceholder(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return true;
+        Item item = stack.getItem();
+        return item == Items.GRAY_STAINED_GLASS_PANE
+                || item == Items.LIGHT_GRAY_STAINED_GLASS_PANE
+                || item == Items.BLACK_STAINED_GLASS_PANE
+                || item == Items.BARRIER;
+    }
+
+    public static String getItemId(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return "minecraft:barrier";
+        return Registries.ITEM.getId(stack.getItem()).toString();
+    }
+
     public static double parseUnitPrice(ItemStack stack, MinecraftClient client) {
-        if (stack == null || stack.isEmpty() || client.world == null) return -1;
+        if (isSoldPlaceholder(stack) || client.world == null) return -1;
 
         List<Text> tooltip = stack.getTooltip(
                 Item.TooltipContext.create(client.world),
