@@ -10,46 +10,17 @@ jobs:
       - run: unzip -o mod.zip || true
       - name: Build Mod Sources
         run: |
-          sed -i 's/"fabricloader": "[^"]*"/"fabricloader": ">=0.16.0"/g' src/main/resources/fabric.mod.json
+          # Меняем точку входа на нашу
           sed -i 's/com.example.client.TemplateModClient/com.example.client.GrimBypassClient/g' src/main/resources/fabric.mod.json
-          
-          # Access Widener (Для noJumpDelay)
-          cat << 'EOF' > src/main/resources/template-mod.accesswidener
-          accessWidener v2 named
-          accessible field net/minecraft/world/entity/LivingEntity noJumpDelay I
-          EOF
-          
-          if ! grep -q "accessWidener" src/main/resources/fabric.mod.json; then
-            sed -i 's/"entrypoints": {/"accessWidener": "template-mod.accesswidener",\n  "entrypoints": {/g' src/main/resources/fabric.mod.json
-          fi
-          
-          # ИСПРАВЛЕНИЕ: Блок loom теперь добавляется в КОНЕЦ build.gradle
-          if ! grep -q "accessWidenerPath" build.gradle; then
-            echo "" >> build.gradle
-            echo "loom {" >> build.gradle
-            echo "    accessWidenerPath = file(\"src/main/resources/template-mod.accesswidener\")" >> build.gradle
-            echo "}" >> build.gradle
-          fi
 
-          # Удаляем старый файл миксинов из main/resources во избежание конфликта
+          # 1. УДАЛЯЕМ ВСЕ СТАРЫЕ КОНФИГИ МИКСИНОВ
           rm -f src/main/resources/template-mod.mixins.json
-          # Удаляем старый КЛИЕНТСКИЙ файл миксинов (ссылается на ExampleClientMixin)
           rm -f src/main/resources/template-mod.client.mixins.json
+          rm -f src/client/resources/template-mod.mixins.json
+          rm -f src/client/resources/template-mod.client.mixins.json
 
-          # ДОБАВЛЕНО: Стратегия для дубликатов в jar и sourcesJar
-          if ! grep -q "duplicatesStrategy" build.gradle; then
-            echo "" >> build.gradle
-            echo "// Исправление ошибки дублирования" >> build.gradle
-            echo "tasks.named('jar') {" >> build.gradle
-            echo "    duplicatesStrategy = DuplicatesStrategy.EXCLUDE" >> build.gradle
-            echo "}" >> build.gradle
-            echo "tasks.named('sourcesJar') {" >> build.gradle
-            echo "    duplicatesStrategy = DuplicatesStrategy.EXCLUDE" >> build.gradle
-            echo "}" >> build.gradle
-          fi
-
-          # Миксины
-          cat << 'EOF' > src/client/resources/template-mod.mixins.json
+          # 2. СОЗДАЕМ НОВЫЙ КОНФИГ (где прописаны только наши миксины)
+          cat << 'EOF' > src/main/resources/template-mod.mixins.json
           {
             "required": true,
             "minVersion": "0.8",
@@ -65,8 +36,44 @@ jobs:
           }
           EOF
 
+          # 3. ИСПРАВЛЯЕМ fabric.mod.json ЧЕРЕЗ PYTHON (чтобы он ссылался только на новый конфиг)
+          python3 -c "
+          import json
+          with open('src/main/resources/fabric.mod.json', 'r') as f:
+              data = json.load(f)
+          data['mixins'] = ['template-mod.mixins.json']
+          data['accessWidener'] = 'template-mod.accesswidener'
+          with open('src/main/resources/fabric.mod.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+
+          # Access Widener (Для noJumpDelay)
+          cat << 'EOF' > src/main/resources/template-mod.accesswidener
+          accessWidener v2 named
+          accessible field net/minecraft/world/entity/LivingEntity noJumpDelay I
+          EOF
+
+          # Добавляем настройки в build.gradle
+          if ! grep -q "accessWidenerPath" build.gradle; then
+            echo "" >> build.gradle
+            echo "loom {" >> build.gradle
+            echo "    accessWidenerPath = file(\"src/main/resources/template-mod.accesswidener\")" >> build.gradle
+            echo "}" >> build.gradle
+          fi
+
+          if ! grep -q "duplicatesStrategy" build.gradle; then
+            echo "" >> build.gradle
+            echo "tasks.named('jar') {" >> build.gradle
+            echo "    duplicatesStrategy = DuplicatesStrategy.EXCLUDE" >> build.gradle
+            echo "}" >> build.gradle
+            echo "tasks.named('sourcesJar') {" >> build.gradle
+            echo "    duplicatesStrategy = DuplicatesStrategy.EXCLUDE" >> build.gradle
+            echo "}" >> build.gradle
+          fi
+
           echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
 
+          # Очищаем папку с Java-файлами и создаем наши
           rm -rf src/client/java/com/example/client/*
           mkdir -p src/client/java/com/example/client/mixin
           
@@ -102,7 +109,7 @@ jobs:
           }
           EOF
 
-          # MIXIN: BLINK (Исправлен бесконечный цикл)
+          # MIXIN: BLINK
           cat << 'EOF' > src/client/java/com/example/client/mixin/ConnectionMixin.java
           package com.example.client.mixin;
 
@@ -157,7 +164,7 @@ jobs:
           }
           EOF
 
-          # MIXIN: HEAD-HITTING & SPIDER (Сброс задержки прыжка)
+          # MIXIN: HEAD-HITTING & SPIDER
           cat << 'EOF' > src/client/java/com/example/client/mixin/LivingEntityMixin.java
           package com.example.client.mixin;
 
