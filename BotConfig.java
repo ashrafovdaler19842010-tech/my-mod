@@ -45,12 +45,16 @@ public class BotConfig {
     }
 
     public static class ItemData {
+        public String searchName;
+        public String enchantsKey;
         public String displayName;
-        public String itemId; // ID предмета для иконки (например, "minecraft:diamond_chestplate")
+        public String itemId;
         public double unitPrice;
         public boolean enabled;
 
-        public ItemData(String displayName, String itemId, double unitPrice, boolean enabled) {
+        public ItemData(String searchName, String enchantsKey, String displayName, String itemId, double unitPrice, boolean enabled) {
+            this.searchName = searchName;
+            this.enchantsKey = enchantsKey;
             this.displayName = displayName;
             this.itemId = itemId;
             this.unitPrice = unitPrice;
@@ -84,17 +88,12 @@ public class BotConfig {
         }
     }
 
-    public void updateItemPrice(String rawName, String itemId, double newUnitPrice) {
-        String key = rawName.trim().toLowerCase();
-        ItemData existing = items.get(key);
-        if (existing == null) {
-            items.put(key, new ItemData(rawName.trim(), itemId, newUnitPrice, true));
+    public void addOrToggleTemplate(String uniqueKey, String searchName, String enchantsKey, String displayName, String itemId, double initialPrice) {
+        if (items.containsKey(uniqueKey)) {
+            items.remove(uniqueKey);
         } else {
-            existing.unitPrice = newUnitPrice;
-            existing.displayName = rawName.trim();
-            if (itemId != null && !itemId.isEmpty()) {
-                existing.itemId = itemId;
-            }
+            items.put(uniqueKey, new ItemData(searchName, enchantsKey, displayName, itemId, initialPrice, true));
         }
+        save();
     }
 }
