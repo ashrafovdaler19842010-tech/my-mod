@@ -8,16 +8,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      # Распаковываем твой шаблон мода
       - run: unzip -o mod.zip || true
       
       - name: Configure Project
         run: |
-          # 1. Понижаем версии, чтобы не было конфликтов с загрузчиком
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
 
-          # 2. Создаем fabric.mod.json с правильной точкой входа (на твой файл)
+          # УДАЛЯЕМ ВСЕ ЛИШНИЕ JAVA ФАЙЛЫ (кроме MainClient.java)
+          find src/client/java -name "*.java" ! -name "MainClient.java" -delete
+          
+          rm -f src/main/resources/*.mixins.json
+          rm -f src/client/resources/*.mixins.json
+
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
@@ -43,7 +46,6 @@ jobs:
           }
           EOF
 
-          # 3. Настраиваем build.gradle
           if ! grep -q "duplicatesStrategy" build.gradle; then
             echo "" >> build.gradle
             echo "tasks.named('jar') {" >> build.gradle
@@ -58,7 +60,7 @@ jobs:
 
       - uses: actions/setup-java@v4
         with:
-          java-version: '25' # <-- ИСПРАВЛЕНО ЗДЕСЬ
+          java-version: '25'
           distribution: 'temurin'
           
       - run: chmod +x gradlew && ./gradlew clean build
