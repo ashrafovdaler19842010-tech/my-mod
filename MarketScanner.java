@@ -11,8 +11,10 @@ import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 
@@ -46,7 +48,7 @@ public class MarketScanner {
     private String currentSearchQuery = "";
 
     public MarketScanner() {
-        // Только русский алфавит: от "аа" до "яя"
+        // Все 2-буквенные комбинации от "аа" до "яя"
         for (int i = 0; i < RU_CHARS.length(); i++) {
             for (int j = 0; j < RU_CHARS.length(); j++) {
                 prefixes.add("" + RU_CHARS.charAt(i) + RU_CHARS.charAt(j));
@@ -77,7 +79,7 @@ public class MarketScanner {
         gotSuggestionsForCurrentPrefix = false;
         state = State.OPEN_CHAT;
         nextActionTime = System.currentTimeMillis();
-        client.player.sendMessage(Text.literal("§b[AuctionBot] §fСбор предметов по русским буквам (аа..яя)..."), false);
+        client.player.sendMessage(Text.literal("§b[AuctionBot] §fБыстрый сбор всех предметов по TAB (аа..яя)..."), false);
     }
 
     public void stopScan() {
@@ -104,17 +106,16 @@ public class MarketScanner {
             case OPEN_CHAT -> {
                 client.setScreen(new ChatScreen(""));
                 state = State.TYPE_PREFIX;
-                nextActionTime = now + 100;
+                nextActionTime = now + 40;
             }
 
             case TYPE_PREFIX -> {
                 if (prefixIndex >= prefixes.size()) {
-                    // Дошли до "яя" — закрываем чат и переходим к оценке цен
                     if (client.currentScreen instanceof ChatScreen) {
                         client.setScreen(null);
                     }
                     itemsQueue.addAll(discoveredItems);
-                    client.player.sendMessage(Text.literal("§b[AuctionBot] §fДошли до ЯЯ! Найдено предметов: " + itemsQueue.size() + ". Оцениваю цены..."), false);
+                    client.player.sendMessage(Text.literal("§b[AuctionBot] §fСбор окончен! Собрано запросов: " + itemsQueue.size() + ". Оцениваю цены..."), false);
                     state = State.SEARCHING_ITEM;
                     nextActionTime = now + speed.chatDelayMs;
                     return;
@@ -123,29 +124,28 @@ public class MarketScanner {
                 String prefix = prefixes.get(prefixIndex);
                 String cmd = "/ah search " + prefix;
 
-                // Меняем текст прямо в открытом чате без пересоздания окна
                 client.setScreen(new ChatScreen(cmd));
                 gotSuggestionsForCurrentPrefix = false;
                 state = State.PRESS_TAB;
-                nextActionTime = now + 80;
+                nextActionTime = now + 25;
             }
 
             case PRESS_TAB -> {
                 if (client.currentScreen instanceof ChatScreen chatScreen) {
-                    // Имитируем реальное нажатие клавиши TAB в открытом чате
+                    // Нажимаем TAB — сервер сам пришлет весь выпадающий список в пакет CommandSuggestionsS2CPacket
                     chatScreen.keyPressed(GLFW.GLFW_KEY_TAB, 0, 0);
                 }
                 stepStartTime = now;
                 state = State.WAIT_TAB_RESULT;
-                nextActionTime = now + 120;
+                nextActionTime = now + 45;
             }
 
             case WAIT_TAB_RESULT -> {
-                // Если сервер прислал список или прошло 350 мс (на эту пару ничего нет) — идем к следующей паре
-                if (gotSuggestionsForCurrentPrefix || (now - stepStartTime > 350)) {
+                // Ждем до 160 мс; как только список пришел (или его нет на эту пару) — сразу летим к следующей паре
+                if (gotSuggestionsForCurrentPrefix || (now - stepStartTime > 160)) {
                     prefixIndex++;
                     state = State.TYPE_PREFIX;
-                    nextActionTime = now + 40;
+                    nextActionTime = now + 15;
                 }
             }
 
@@ -178,7 +178,7 @@ public class MarketScanner {
                     client.player.closeHandledScreen();
                     state = State.SEARCHING_ITEM;
                     nextActionTime = now + speed.chatDelayMs;
-                } else if (now - stepStartTime > 2500) {
+                } else if (now - stepStartTime > 2000) {
                     state = State.SEARCHING_ITEM;
                     nextActionTime = now + speed.chatDelayMs;
                 }
@@ -187,14 +187,15 @@ public class MarketScanner {
     }
 
     public boolean handleSuggestionsPacket(CommandSuggestionsS2CPacket packet) {
-        if (state != State.PRESS_TAB && state != State.WAIT_TAB_RESULT) {
+        if (state != State.PRESS_TAB && state != State.WAIT_TAB_RESULT && state != State.TYPE_PREFIX) {
             return false;
         }
 
         boolean addedAny = false;
         for (CommandSuggestionsS2CPacket.Suggestion suggestion : packet.suggestions()) {
             String text = suggestion.text().trim();
-            if (!text.isEmpty() && !text.startsWith("/") && !text.contains("<")) {
+            // Игнорируем только саму команду и плейсхолдеры вида [<args>]
+            if (!text.isEmpty() && !text.startsWith("/") && !text.startsWith("[<")) {
                 discoveredItems.add(text);
                 addedAny = true;
             }
@@ -203,7 +204,6 @@ public class MarketScanner {
         if (addedAny) {
             gotSuggestionsForCurrentPrefix = true;
         }
-        // Не отменяем пакет (возвращаем false), чтобы список подсказок отрисовывался в чате
         return false;
     }
 
@@ -211,25 +211,30 @@ public class MarketScanner {
         GenericContainerScreenHandler handler = screen.getScreenHandler();
         int maxSlots = Math.min(45, handler.getRows() * 9);
 
-        double bestUnitPrice = Double.MAX_VALUE;
-        String foundItemName = currentSearchQuery;
+        // Группируем по точному названию предмета в каждом слоте (отдельно Талисман Крушителя, отдельно Карателя и т.д.)
+        Map<String, Double> bestPricesByExactName = new HashMap<>();
 
         for (int i = 0; i < maxSlots; i++) {
             ItemStack stack = handler.slots.get(i).getStack();
             if (stack.isEmpty()) continue;
 
             double unitPrice = PriceParser.parseUnitPrice(stack, client);
-            if (unitPrice > 0 && unitPrice < bestUnitPrice) {
-                bestUnitPrice = unitPrice;
-                String cleanName = PriceParser.getCleanItemName(stack);
-                if (!cleanName.isEmpty()) {
-                    foundItemName = cleanName;
-                }
+            if (unitPrice <= 0) continue;
+
+            String exactName = PriceParser.getCleanItemName(stack);
+            if (exactName.isEmpty()) exactName = currentSearchQuery;
+
+            double prevBest = bestPricesByExactName.getOrDefault(exactName, Double.MAX_VALUE);
+            if (unitPrice < prevBest) {
+                bestPricesByExactName.put(exactName, unitPrice);
             }
         }
 
-        if (bestUnitPrice < Double.MAX_VALUE) {
-            BotConfig.INSTANCE.updateItemPrice(foundItemName, bestUnitPrice);
+        for (Map.Entry<String, Double> entry : bestPricesByExactName.entrySet()) {
+            BotConfig.INSTANCE.updateItemPrice(entry.getKey(), entry.getValue());
+        }
+
+        if (!bestPricesByExactName.isEmpty()) {
             BotConfig.save();
         }
     }
