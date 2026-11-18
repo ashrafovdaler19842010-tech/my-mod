@@ -4,6 +4,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.text.Text;
 import org.lwjgl.glfw.GLFW;
@@ -11,6 +12,7 @@ import org.lwjgl.glfw.GLFW;
 public class AuctionBotClient implements ClientModInitializer {
 
     private boolean wasRightCtrlPressed = false;
+    private boolean wasStopKeyPressed = false;
 
     @Override
     public void onInitializeClient() {
@@ -18,9 +20,10 @@ public class AuctionBotClient implements ClientModInitializer {
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.getWindow() == null) return;
+            long windowHandle = client.getWindow().getHandle();
 
-            // Открытие меню настроек по Right Ctrl
-            boolean isRightCtrl = InputUtil.isKeyPressed(client.getWindow().getHandle(), GLFW.GLFW_KEY_RIGHT_CONTROL);
+            // 1. Открытие меню настроек по Right Ctrl
+            boolean isRightCtrl = InputUtil.isKeyPressed(windowHandle, GLFW.GLFW_KEY_RIGHT_CONTROL);
             if (isRightCtrl && !wasRightCtrlPressed) {
                 if (client.currentScreen instanceof BotConfigScreen) {
                     client.setScreen(null);
@@ -30,7 +33,15 @@ public class AuctionBotClient implements ClientModInitializer {
             }
             wasRightCtrlPressed = isRightCtrl;
 
-            // Тики сканера и снайпера
+            // 2. Экстренная кнопка СТОП на клавишу C (работает в игре и в открытом сундуке, кроме чата и меню ввода)
+            boolean isTyping = (client.currentScreen instanceof ChatScreen) || (client.currentScreen instanceof BotConfigScreen);
+            boolean isStopKey = !isTyping && InputUtil.isKeyPressed(windowHandle, GLFW.GLFW_KEY_C);
+            if (isStopKey && !wasStopKeyPressed) {
+                AuctionSniper.INSTANCE.forceStopAll(client);
+            }
+            wasStopKeyPressed = isStopKey;
+
+            // 3. Тики сканера и снайпера
             MarketScanner.INSTANCE.tick(client);
             AuctionSniper.INSTANCE.tick(client);
         });
@@ -41,7 +52,7 @@ public class AuctionBotClient implements ClientModInitializer {
             if (client.player == null || client.options.hudHidden) return;
 
             String line1 = "§6[AuctionBot] " + AuctionSniper.INSTANCE.getHudStatus();
-            String line2 = "§7Порог: §f" + BotConfig.INSTANCE.buyPercent + "% §7| Скорость: §f" + BotConfig.INSTANCE.speedMode.displayName + " §8[R-Ctrl]";
+            String line2 = "§7Порог: §f" + BotConfig.INSTANCE.buyPercent + "% §7| Скорость: §f" + BotConfig.INSTANCE.speedMode.displayName + " §8[R-Ctrl | C-Стоп]";
 
             drawContext.drawTextWithShadow(client.textRenderer, Text.literal(line1), 8, 8, 0xFFFFFF);
             drawContext.drawTextWithShadow(client.textRenderer, Text.literal(line2), 8, 19, 0xCCCCCC);
