@@ -122,7 +122,7 @@ jobs:
           EOF
 
       - name: Build with Gradle
-        run: gradle build --no-daemon
+        run: gradle build --no-daemon --no-configuration-cache
 
       - name: Upload Jar
         uses: actions/upload-artifact@v4
