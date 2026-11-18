@@ -5,7 +5,12 @@ import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.SliderWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,9 +46,9 @@ public class BotConfigScreen extends Screen {
                 }
         ).dimensions(centerX - 185, 14, 88, 20).build());
 
-        // 2. Кнопка Скан 100+100 страниц
+        // 2. Кнопка Скан 4x50 страниц
         this.addDrawableChild(ButtonWidget.builder(
-                Text.literal("§bСкан 200 стр."),
+                Text.literal("§bСкан 4x50 стр."),
                 btn -> {
                     if (this.client != null) {
                         MarketScanner.INSTANCE.startFullScan(this.client);
@@ -91,7 +96,7 @@ public class BotConfigScreen extends Screen {
 
         // 6. Поле поиска по предметам
         this.searchField = new TextFieldWidget(this.textRenderer, centerX - 185, 64, 370, 18, Text.literal("Поиск..."));
-        this.searchField.setPlaceholder(Text.literal("§7Поиск предмета (например: тростник, нагрудник)..."));
+        this.searchField.setPlaceholder(Text.literal("§7Поиск предмета (или наведите на иконку слева)..."));
         this.searchField.setText(searchQuery);
         this.searchField.setChangedListener(text -> {
             this.searchQuery = text;
@@ -184,7 +189,21 @@ public class BotConfigScreen extends Screen {
         }
         return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
     }
-    
+
+    private ItemStack resolveIconStack(String itemIdStr) {
+        if (itemIdStr == null || itemIdStr.isEmpty()) {
+            return new ItemStack(Items.CHEST);
+        }
+        Identifier id = Identifier.tryParse(itemIdStr);
+        if (id != null && Registries.ITEM.containsId(id)) {
+            Item item = Registries.ITEM.get(id);
+            if (item != Items.AIR) {
+                return new ItemStack(item);
+            }
+        }
+        return new ItemStack(Items.CHEST);
+    }
+
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         super.render(context, mouseX, mouseY, delta);
@@ -196,10 +215,12 @@ public class BotConfigScreen extends Screen {
         if (filteredItems.isEmpty()) {
             context.drawCenteredTextWithShadow(
                     this.textRenderer,
-                    Text.literal("§7База пуста. Нажмите «Скан 200 стр.» или «Очистить»."),
+                    Text.literal("§7База пуста. Нажмите «Скан 4x50 стр.» или «Очистить»."),
                     centerX, LIST_TOP + 20, 0xAAAAAA
             );
         } else {
+            Text hoveredTooltip = null;
+
             for (int i = 0; i < maxVisibleRows; i++) {
                 int dataIndex = scrollOffset + i;
                 if (dataIndex >= filteredItems.size()) break;
@@ -207,34 +228,32 @@ public class BotConfigScreen extends Screen {
                 BotConfig.ItemData itemData = filteredItems.get(dataIndex).getValue();
                 int rowY = LIST_TOP + i * ROW_HEIGHT;
 
-                // Четкая темная подложка под название предмета
-                context.fill(centerX - 185, rowY, centerX + 20, rowY + 18, 0xCC111111);
+                // Рамка под иконку предмета слева
+                int iconX = centerX - 185;
+                context.fill(iconX, rowY, iconX + 20, rowY + 18, 0xCC1A1A1A);
+                context.drawItem(resolveIconStack(itemData.itemId), iconX + 2, rowY + 1);
 
-                String nameColor = itemData.enabled ? "§f" : "§7";
-                String displayName = itemData.displayName;
-                if (displayName.length() > 30) {
-                    displayName = displayName.substring(0, 30) + "...";
+                // Если мышка наведена на левую область строки — запоминаем полное название для подсказки
+                if (mouseX >= iconX && mouseX <= centerX + 20 && mouseY >= rowY && mouseY <= rowY + 18) {
+                    hoveredTooltip = Text.literal((itemData.enabled ? "§a" : "§c") + itemData.displayName);
                 }
+            }
 
-                context.drawTextWithShadow(
-                        this.textRenderer,
-                        Text.literal(nameColor + displayName),
-                        centerX - 180, rowY + 5, 0xFFFFFF
-                );
+            if (hoveredTooltip != null) {
+                context.drawTooltip(this.textRenderer, hoveredTooltip, mouseX, mouseY);
             }
         }
 
         context.drawCenteredTextWithShadow(
                 this.textRenderer,
-                Text.literal("§7Всего предметов: " + filteredItems.size() + " | Статус: " + AuctionSniper.INSTANCE.getHudStatus()),
+                Text.literal("§7Всего: " + filteredItems.size() + " | Наведите на иконку для названия | Стоп: [C]"),
                 centerX, this.height - 16, 0xCCCCCC
         );
     }
+
     @Override
     public void close() {
         BotConfig.save();
         super.close();
     }
 }
-
-    
