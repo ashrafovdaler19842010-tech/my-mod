@@ -17,136 +17,64 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.14'
+          gradle-version: '9.2.0'
 
       - name: Unzip template
         run: unzip -o mod.zip || true
 
-      - name: Configure Project
+      - name: Configure Project & Copy Sources
         run: |
-          # 1. Настройка версий в gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21.8/' gradle.properties
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^yarn_mappings=.*/yarn_mappings=1.21.8+build.1/' gradle.properties
           sed -i 's/^fabric_version=.*/fabric_version=0.129.0+1.21.8/' gradle.properties
 
-          # 2. Очистка старых исходников из шаблона (если есть) и создание структуры
           rm -rf src/main/java/*
-          mkdir -p src/main/java/com/chestscanner
+          mkdir -p src/main/java/com/auctionbot/mixin
           mkdir -p src/main/resources
 
-          # 3. Создание fabric.mod.json
+          cp BotConfig.java PriceParser.java MarketScanner.java AuctionSniper.java BotConfigScreen.java AuctionBotClient.java src/main/java/com/auctionbot/
+          cp ClientPlayNetworkHandlerMixin.java src/main/java/com/auctionbot/mixin/
+
+          cat << 'EOF' > src/main/resources/auctionbot.mixins.json
+          {
+            "required": true,
+            "minVersion": "0.8",
+            "package": "com.auctionbot.mixin",
+            "compatibilityLevel": "JAVA_21",
+            "client": [
+              "ClientPlayNetworkHandlerMixin"
+            ],
+            "injectors": {
+              "defaultRequire": 1
+            }
+          }
+          EOF
+
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
-            "id": "chestscanner",
+            "id": "auctionbot",
             "version": "1.0.0",
-            "name": "Chest Scanner",
-            "description": "Copies full info of first 45 slots in a double chest on J",
+            "name": "AuctionBot",
+            "description": "Auto market scanner and auction sniper for 1.21.8",
             "authors": ["ashrafovdaler19842010-tech"],
             "license": "MIT",
             "environment": "client",
             "entrypoints": {
               "client": [
-                "com.chestscanner.ChestScannerClient"
+                "com.auctionbot.AuctionBotClient"
               ]
             },
+            "mixins": [
+              "auctionbot.mixins.json"
+            ],
             "depends": {
               "fabricloader": ">=0.16.0",
               "minecraft": "~1.21.8",
               "java": ">=21",
               "fabric-api": "*"
             }
-          }
-          EOF
-
-          # 4. Запись Java-кода мода
-          cat << 'EOF' > src/main/java/com/chestscanner/ChestScannerClient.java
-          package com.chestscanner;
-
-          import net.fabricmc.api.ClientModInitializer;
-          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-          import net.minecraft.client.MinecraftClient;
-          import net.minecraft.client.gui.screen.ingame.GenericContainerScreen;
-          import net.minecraft.client.util.InputUtil;
-          import net.minecraft.item.Item;
-          import net.minecraft.item.ItemStack;
-          import net.minecraft.item.tooltip.TooltipType;
-          import net.minecraft.screen.GenericContainerScreenHandler;
-          import net.minecraft.screen.slot.Slot;
-          import net.minecraft.text.Text;
-          import org.lwjgl.glfw.GLFW;
-
-          import java.util.List;
-
-          public class ChestScannerClient implements ClientModInitializer {
-
-              private boolean wasJPressed = false;
-
-              @Override
-              public void onInitializeClient() {
-                  ClientTickEvents.END_CLIENT_TICK.register(client -> {
-                      if (client.getWindow() == null) return;
-
-                      // Проверяем нажатие клавиши J напрямую через GLFW (работает внутри открытого сундука)
-                      boolean isJPressed = InputUtil.isKeyPressed(client.getWindow().getHandle(), GLFW.GLFW_KEY_J);
-
-                      if (isJPressed && !wasJPressed) {
-                          scanAndCopyChest(client);
-                      }
-                      wasJPressed = isJPressed;
-                  });
-              }
-
-              private void scanAndCopyChest(MinecraftClient client) {
-                  if (client.player == null || !(client.currentScreen instanceof GenericContainerScreen containerScreen)) {
-                      return;
-                  }
-
-                  GenericContainerScreenHandler handler = containerScreen.getScreenHandler();
-                  int totalContainerSlots = handler.getRows() * 9;
-
-                  // Проверяем, что открыт двойной сундук (54 слота)
-                  if (totalContainerSlots < 54) {
-                      client.player.sendMessage(Text.literal("§cОткройте двойной сундук (54 слота)!"), true);
-                      return;
-                  }
-
-                  StringBuilder result = new StringBuilder();
-                  int itemsFound = 0;
-
-                  // Сканируем только первые 45 слотов (индексы 0..44), пропускаем последний ряд (45..53)
-                  for (int i = 0; i < 45; i++) {
-                      Slot slot = handler.slots.get(i);
-                      ItemStack stack = slot.getStack();
-
-                      if (!stack.isEmpty()) {
-                          itemsFound++;
-                          result.append("=== Слот ").append(i + 1).append(" (x").append(stack.getCount()).append(") ===\n");
-
-                          List<Text> tooltip = stack.getTooltip(
-                                  Item.TooltipContext.create(client.world),
-                                  client.player,
-                                  TooltipType.BASIC
-                          );
-
-                          for (Text line : tooltip) {
-                              String textLine = line.getString().trim();
-                              if (!textLine.isEmpty()) {
-                                  result.append(textLine).append("\n");
-                              }
-                          }
-                          result.append("\n");
-                      }
-                  }
-
-                  if (itemsFound > 0) {
-                      client.keyboard.setClipboard(result.toString());
-                      client.player.sendMessage(Text.literal("§aСкопировано предметов: " + itemsFound + " (первые 45 слотов)"), true);
-                  } else {
-                      client.player.sendMessage(Text.literal("§eВ первых 45 слотах пусто."), true);
-                  }
-              }
           }
           EOF
 
@@ -158,5 +86,5 @@ jobs:
       - name: Upload Jar
         uses: actions/upload-artifact@v4
         with:
-          name: ChestScanner-1.21.8
+          name: AuctionBot-1.21.8
           path: build/libs/*.jar
