@@ -184,15 +184,10 @@ public class BotConfigScreen extends Screen {
         }
         return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
     }
-
+    
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        // Сначала рисуем фон и виджеты (кнопки и поля)
         super.render(context, mouseX, mouseY, delta);
-
-        // Затем поверх всех слоев (Z = 300) рисуем плашки и названия предметов
-        context.getMatrices().push();
-        context.getMatrices().translate(0, 0, 300.0f);
 
         int centerX = this.width / 2;
         int listBottom = this.height - 28;
@@ -234,13 +229,12 @@ public class BotConfigScreen extends Screen {
                 Text.literal("§7Всего предметов: " + filteredItems.size() + " | Статус: " + AuctionSniper.INSTANCE.getHudStatus()),
                 centerX, this.height - 16, 0xCCCCCC
         );
-
-        context.getMatrices().pop();
     }
-
     @Override
     public void close() {
         BotConfig.save();
         super.close();
     }
 }
+
+    
