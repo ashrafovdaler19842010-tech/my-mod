@@ -19,19 +19,17 @@ public class MarketScanner {
     public static final MarketScanner INSTANCE = new MarketScanner();
 
     private static final long SCAN_INTERVAL_MS = 10 * 60 * 1000L; // Раз в 10 минут
-    private static final int PAGES_PER_ANARCHY = 100;
+    private static final int PAGES_PER_ANARCHY = 50;
+    private static final int TOTAL_PHASES = 4; // 4 круга по 50 стр. = 200 стр.
     private static final int NEXT_PAGE_SLOT_INDEX = 51; // 52-й слот (стрелка вправо)
 
     public enum State {
         IDLE,
-        OPENING_AH_PHASE1,
-        WAIT_OPEN_PHASE1,
-        FLIPPING_PHASE1,
+        OPENING_AH,
+        WAIT_OPEN,
+        FLIPPING_PAGES,
         SWITCHING_HUB,
-        SWITCHING_ANARCHY,
-        OPENING_AH_PHASE2,
-        WAIT_OPEN_PHASE2,
-        FLIPPING_PHASE2
+        SWITCHING_ANARCHY
     }
 
     private State state = State.IDLE;
@@ -40,10 +38,11 @@ public class MarketScanner {
     private long lastFullScanTime = 0;
     private long nextActionTime = 0;
     private long stateStartTime = 0;
+    private int currentPhase = 1;
     private int currentPageCount = 0;
 
-    // Собранные цены за весь проход: ключ = lowerCase имя, значение = список всех цен за 1 шт.
     private final Map<String, String> originalNames = new HashMap<>();
+    private final Map<String, String> itemIds = new HashMap<>();
     private final Map<String, List<Double>> collectedPrices = new HashMap<>();
 
     public boolean isRunning() {
@@ -51,25 +50,20 @@ public class MarketScanner {
     }
 
     public String getStatusText() {
-        return switch (state) {
-            case IDLE -> "Ожидание";
-            case OPENING_AH_PHASE1, WAIT_OPEN_PHASE1, FLIPPING_PHASE1 ->
-                    "Скан Анка #1: стр. " + currentPageCount + "/" + PAGES_PER_ANARCHY;
-            case SWITCHING_HUB, SWITCHING_ANARCHY ->
-                    "Смена анки для скана #2...";
-            case OPENING_AH_PHASE2, WAIT_OPEN_PHASE2, FLIPPING_PHASE2 ->
-                    "Скан Анка #2: стр. " + currentPageCount + "/" + PAGES_PER_ANARCHY;
-        };
+        if (state == State.IDLE) return "Ожидание";
+        return "Скан [" + currentPhase + "/" + TOTAL_PHASES + "] стр. " + currentPageCount + "/" + PAGES_PER_ANARCHY;
     }
 
     public void startFullScan(MinecraftClient client) {
         if (client.player == null || client.getNetworkHandler() == null) return;
         originalNames.clear();
+        itemIds.clear();
         collectedPrices.clear();
+        currentPhase = 1;
         currentPageCount = 0;
-        state = State.OPENING_AH_PHASE1;
+        state = State.OPENING_AH;
         nextActionTime = System.currentTimeMillis() + 200;
-        client.player.sendMessage(Text.literal("§b[AuctionBot] §fЗапуск легитного скана: 100 стр. + смена анки + 100 стр."), false);
+        client.player.sendMessage(Text.literal("§b[AuctionBot] §fЗапуск скана: 4 круга по 50 стр. (всего 200 стр.)"), false);
     }
 
     public void stopScan() {
@@ -95,7 +89,7 @@ public class MarketScanner {
         if (state == State.IDLE || now < nextActionTime) return;
 
         switch (state) {
-            case OPENING_AH_PHASE1 -> {
+            case OPENING_AH -> {
                 if (client.currentScreen != null) {
                     client.player.closeHandledScreen();
                     nextActionTime = now + jitter(250, 100, 250);
@@ -103,92 +97,22 @@ public class MarketScanner {
                 }
                 client.getNetworkHandler().sendChatCommand("ah");
                 stateStartTime = now;
-                state = State.WAIT_OPEN_PHASE1;
+                state = State.WAIT_OPEN;
                 nextActionTime = now + jitter(350, 150, 300);
             }
 
-            case WAIT_OPEN_PHASE1 -> {
+            case WAIT_OPEN -> {
                 if (client.currentScreen instanceof GenericContainerScreen) {
                     currentPageCount = 0;
-                    state = State.FLIPPING_PHASE1;
+                    state = State.FLIPPING_PAGES;
                     nextActionTime = now + jitter(180, 100, 220);
                 } else if (now - stateStartTime > 3500) {
-                    state = State.OPENING_AH_PHASE1;
+                    state = State.OPENING_AH;
                 }
             }
-
-            case FLIPPING_PHASE1 -> {
+            case FLIPPING_PAGES -> {
                 if (!(client.currentScreen instanceof GenericContainerScreen containerScreen)) {
-                    state = State.OPENING_AH_PHASE1;
-                    nextActionTime = now + 400;
-                    return;
-                }
-
-                collectFromPage(containerScreen, client);
-                currentPageCount++;
-
-                if (currentPageCount >= PAGES_PER_ANARCHY) {
-                    client.player.closeHandledScreen();
-                    state = State.SWITCHING_HUB;
-                    nextActionTime = now + jitter(500, 200, 500);
-                    return;
-                }
-
-                GenericContainerScreenHandler handler = containerScreen.getScreenHandler();
-                if (handler.slots.size() > NEXT_PAGE_SLOT_INDEX && !handler.slots.get(NEXT_PAGE_SLOT_INDEX).getStack().isEmpty()) {
-                    client.interactionManager.clickSlot(
-                            handler.syncId, NEXT_PAGE_SLOT_INDEX, 0, SlotActionType.PICKUP, client.player
-                    );
-                    nextActionTime = now + jitter(260, 120, 280);
-                } else {
-                    // Страницы закончились раньше 100 — переходим ко второй анархии
-                    client.player.closeHandledScreen();
-                    state = State.SWITCHING_HUB;
-                    nextActionTime = now + jitter(500, 200, 500);
-                }
-            }
-            case SWITCHING_HUB -> {
-                if (client.currentScreen != null) {
-                    client.player.closeHandledScreen();
-                }
-                client.getNetworkHandler().sendChatCommand("hub");
-                state = State.SWITCHING_ANARCHY;
-                nextActionTime = now + jitter(2000, 600, 1400);
-            }
-
-            case SWITCHING_ANARCHY -> {
-                int anarchyNum = 103 + random.nextInt(6);
-                client.getNetworkHandler().sendChatCommand("an" + anarchyNum);
-                client.player.sendMessage(Text.literal("§b[AuctionBot] §fСкан #2 на /an" + anarchyNum + "..."), false);
-                state = State.OPENING_AH_PHASE2;
-                nextActionTime = now + jitter(2800, 800, 1500);
-            }
-
-            case OPENING_AH_PHASE2 -> {
-                if (client.currentScreen != null) {
-                    client.player.closeHandledScreen();
-                    nextActionTime = now + jitter(250, 100, 250);
-                    return;
-                }
-                client.getNetworkHandler().sendChatCommand("ah");
-                stateStartTime = now;
-                state = State.WAIT_OPEN_PHASE2;
-                nextActionTime = now + jitter(350, 150, 300);
-            }
-
-            case WAIT_OPEN_PHASE2 -> {
-                if (client.currentScreen instanceof GenericContainerScreen) {
-                    currentPageCount = 0;
-                    state = State.FLIPPING_PHASE2;
-                    nextActionTime = now + jitter(180, 100, 220);
-                } else if (now - stateStartTime > 3500) {
-                    state = State.OPENING_AH_PHASE2;
-                }
-            }
-
-            case FLIPPING_PHASE2 -> {
-                if (!(client.currentScreen instanceof GenericContainerScreen containerScreen)) {
-                    state = State.OPENING_AH_PHASE2;
+                    state = State.OPENING_AH;
                     nextActionTime = now + 400;
                     return;
                 }
@@ -207,12 +131,34 @@ public class MarketScanner {
                     );
                     nextActionTime = now + jitter(260, 120, 280);
                 } else {
-                    // Завершили все 200 страниц — фильтруем подставы анти-чита и сохраняем честные цены
                     client.player.closeHandledScreen();
-                    finalizeAndSavePrices(client);
-                    lastFullScanTime = now;
-                    state = State.IDLE;
+                    if (currentPhase < TOTAL_PHASES) {
+                        currentPhase++;
+                        state = State.SWITCHING_HUB;
+                        nextActionTime = now + jitter(500, 200, 500);
+                    } else {
+                        finalizeAndSavePrices(client);
+                        lastFullScanTime = now;
+                        state = State.IDLE;
+                    }
                 }
+            }
+
+            case SWITCHING_HUB -> {
+                if (client.currentScreen != null) {
+                    client.player.closeHandledScreen();
+                }
+                client.getNetworkHandler().sendChatCommand("hub");
+                state = State.SWITCHING_ANARCHY;
+                nextActionTime = now + jitter(2000, 600, 1400);
+            }
+
+            case SWITCHING_ANARCHY -> {
+                int anarchyNum = 103 + random.nextInt(6);
+                client.getNetworkHandler().sendChatCommand("an" + anarchyNum);
+                client.player.sendMessage(Text.literal("§b[AuctionBot] §fКруг #" + currentPhase + " на /an" + anarchyNum + "..."), false);
+                state = State.OPENING_AH;
+                nextActionTime = now + jitter(2800, 800, 1500);
             }
         }
     }
@@ -223,7 +169,7 @@ public class MarketScanner {
 
         for (int i = 0; i < maxSlots; i++) {
             ItemStack stack = handler.slots.get(i).getStack();
-            if (stack.isEmpty()) continue;
+            if (PriceParser.isSoldPlaceholder(stack)) continue;
 
             double unitPrice = PriceParser.parseUnitPrice(stack, client);
             if (unitPrice <= 0) continue;
@@ -233,6 +179,7 @@ public class MarketScanner {
 
             String key = cleanName.toLowerCase();
             originalNames.putIfAbsent(key, cleanName);
+            itemIds.putIfAbsent(key, PriceParser.getItemId(stack));
             collectedPrices.computeIfAbsent(key, k -> new ArrayList<>()).add(unitPrice);
         }
     }
@@ -249,9 +196,8 @@ public class MarketScanner {
 
             double chosenBestPrice;
             if (prices.size() >= 3) {
-                // Вычисляем медиану рынка, чтобы отсеять фейковые подставы анти-чита (например, 2к вместо 100 млн)
                 double median = prices.get(prices.size() / 2);
-                double minLegitThreshold = median * 0.25; // Всё, что дешевле 25% от медианы, считаем подставой
+                double minLegitThreshold = median * 0.25;
 
                 chosenBestPrice = prices.get(prices.size() - 1);
                 for (double p : prices) {
@@ -261,7 +207,6 @@ public class MarketScanner {
                     }
                 }
             } else {
-                // Если лотов 1-2 штуки, берем минимальный (или второй, если первый в 5+ раз дешевле второго)
                 if (prices.size() == 2 && prices.get(0) < prices.get(1) * 0.2) {
                     chosenBestPrice = prices.get(1);
                 } else {
@@ -270,14 +215,15 @@ public class MarketScanner {
             }
 
             String displayName = originalNames.getOrDefault(key, key);
-            BotConfig.INSTANCE.updateItemPrice(displayName, chosenBestPrice);
+            String id = itemIds.getOrDefault(key, "minecraft:barrier");
+            BotConfig.INSTANCE.updateItemPrice(displayName, id, chosenBestPrice);
             savedCount++;
         }
 
         BotConfig.save();
         if (client.player != null) {
             client.player.sendMessage(Text.literal(
-                    "§a[AuctionBot] §fСкан 200 стр. завершен! Сохранено предметов: " + savedCount + " (подставы отсеяны)."
+                    "§a[AuctionBot] §fСкан 4x50 стр. завершен! Сохранено: " + savedCount + " предметов."
             ), false);
         }
     }
