@@ -15,12 +15,13 @@ jobs:
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
 
-          # УДАЛЯЕМ ВСЕ ЛИШНИЕ JAVA ФАЙЛЫ (кроме MainClient.java)
-          find src/client/java -name "*.java" ! -name "MainClient.java" -delete
+          # УДАЛЯЕМ ВСЕ ЛИШНИЕ JAVA ФАЙЛЫ ШАБЛОНА
+          find src/client/java -name "*.java" ! -name "MainClient.java" ! -name "GuiScreen.java" -delete
           
           rm -f src/main/resources/*.mixins.json
           rm -f src/client/resources/*.mixins.json
 
+          # СОЗДАЕМ fabric.mod.json
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
@@ -37,6 +38,7 @@ jobs:
                 "com.example.client.MainClient"
               ]
             },
+            "accessWidener": "custommod.accesswidener",
             "depends": {
               "fabricloader": ">=0.16.0",
               "minecraft": "~1.21",
@@ -45,6 +47,19 @@ jobs:
             }
           }
           EOF
+
+          # СОЗДАЕМ ACCESS WIDENER ДЛЯ БЫСТРЫХ КРИТОВ
+          cat << 'EOF' > src/main/resources/custommod.accesswidener
+          accessWidener v2 named
+          accessible field net/minecraft/world/entity/player/Player attackStrengthTicker I
+          EOF
+
+          if ! grep -q "accessWidenerPath" build.gradle; then
+            echo "" >> build.gradle
+            echo "loom {" >> build.gradle
+            echo "    accessWidenerPath = file(\"src/main/resources/custommod.accesswidener\")" >> build.gradle
+            echo "}" >> build.gradle
+          fi
 
           if ! grep -q "duplicatesStrategy" build.gradle; then
             echo "" >> build.gradle
