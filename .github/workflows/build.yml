@@ -31,10 +31,16 @@ jobs:
             echo "}" >> build.gradle
           fi
 
-          # ДОБАВЛЕНО: Стратегия для дубликатов в sourcesJar
+          # Удаляем старый файл миксинов из main/resources во избежание конфликта
+          rm -f src/main/resources/template-mod.mixins.json
+
+          # ДОБАВЛЕНО: Стратегия для дубликатов в jar и sourcesJar
           if ! grep -q "duplicatesStrategy" build.gradle; then
             echo "" >> build.gradle
-            echo "// Исправление ошибки дублирования в sourcesJar" >> build.gradle
+            echo "// Исправление ошибки дублирования" >> build.gradle
+            echo "tasks.named('jar') {" >> build.gradle
+            echo "    duplicatesStrategy = DuplicatesStrategy.EXCLUDE" >> build.gradle
+            echo "}" >> build.gradle
             echo "tasks.named('sourcesJar') {" >> build.gradle
             echo "    duplicatesStrategy = DuplicatesStrategy.EXCLUDE" >> build.gradle
             echo "}" >> build.gradle
