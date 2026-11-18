@@ -1,6 +1,7 @@
 package com.auctionbot;
 
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.gui.screen.ingame.GenericContainerScreen;
 import net.minecraft.item.ItemStack;
 import net.minecraft.network.packet.c2s.play.RequestCommandCompletionsC2SPacket;
@@ -9,14 +10,17 @@ import net.minecraft.screen.GenericContainerScreenHandler;
 import net.minecraft.text.Text;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Queue;
 import java.util.Set;
 
 public class MarketScanner {
     public static final MarketScanner INSTANCE = new MarketScanner();
 
-    private static final String ALPHABET = "абвгдеёжзийклмнопрстуфхцчшщъыьэюяabcdefghijklmnopqrstuvwxyz";
+    private static final String RU_CHARS = "абвгдежзийклмнопрстуфхцчшщъыьэюя";
+    private static final String EN_CHARS = "abcdefghijklmnopqrstuvwxyz";
     private static final long SCAN_INTERVAL_MS = 30 * 60 * 1000L; // 30 минут
     private static final int COMPLETION_ID = 987654;
 
@@ -30,14 +34,29 @@ public class MarketScanner {
     private State state = State.IDLE;
     private long lastFullScanTime = 0;
     private long nextActionTime = 0;
-    private long chestWaitStartTime = 0;
+    private long stepStartTime = 0;
 
-    private int alphabetIndex = 0;
+    private final List<String> prefixes = new ArrayList<>();
+    private int prefixIndex = 0;
     private boolean waitingTabResponse = false;
 
     private final Set<String> discoveredItems = new LinkedHashSet<>();
     private final Queue<String> itemsQueue = new ArrayDeque<>();
     private String currentSearchQuery = "";
+
+    public MarketScanner() {
+        // Генерируем все 2-буквенные комбинации (аа..яя и aa..zz)
+        for (int i = 0; i < RU_CHARS.length(); i++) {
+            for (int j = 0; j < RU_CHARS.length(); j++) {
+                prefixes.add("" + RU_CHARS.charAt(i) + RU_CHARS.charAt(j));
+            }
+        }
+        for (int i = 0; i < EN_CHARS.length(); i++) {
+            for (int j = 0; j < EN_CHARS.length(); j++) {
+                prefixes.add("" + EN_CHARS.charAt(i) + EN_CHARS.charAt(j));
+            }
+        }
+    }
 
     public boolean isRunning() {
         return state != State.IDLE;
@@ -46,7 +65,7 @@ public class MarketScanner {
     public String getStatusText() {
         return switch (state) {
             case IDLE -> "Ожидание";
-            case COLLECTING_TABS -> "Сбор TAB (" + alphabetIndex + "/" + ALPHABET.length() + ")";
+            case COLLECTING_TABS -> "Сбор TAB (" + prefixIndex + "/" + prefixes.size() + ") найдено: " + discoveredItems.size();
             case SEARCHING_ITEM, WAITING_CHEST -> "Скан цен (осталось: " + itemsQueue.size() + ")";
         };
     }
@@ -55,11 +74,11 @@ public class MarketScanner {
         if (client.player == null || client.getNetworkHandler() == null) return;
         discoveredItems.clear();
         itemsQueue.clear();
-        alphabetIndex = 0;
+        prefixIndex = 0;
         waitingTabResponse = false;
         state = State.COLLECTING_TABS;
         nextActionTime = System.currentTimeMillis();
-        client.player.sendMessage(Text.literal("§b[AuctionBot] §fНачинаю сбор предметов через TAB..."), false);
+        client.player.sendMessage(Text.literal("§b[AuctionBot] §fЗапуск сбора предметов по 2 буквам (аа..zz)..."), false);
     }
 
     public void stopScan() {
@@ -86,24 +105,34 @@ public class MarketScanner {
         switch (state) {
             case COLLECTING_TABS -> {
                 if (waitingTabResponse) {
-                    // Таймаут ожидания TAB (1.5 сек), если на эту букву нет предметов
-                    if (now - chestWaitStartTime > 1500) {
+                    // Если сервер не ответил за 220 мс (на эти 2 буквы нет предметов) — идем к следующей паре
+                    if (now - stepStartTime > 220) {
                         waitingTabResponse = false;
-                        alphabetIndex++;
+                        prefixIndex++;
                     }
                     return;
                 }
 
-                if (alphabetIndex < ALPHABET.length()) {
-                    char letter = ALPHABET.charAt(alphabetIndex);
+                if (prefixIndex < prefixes.size()) {
+                    String prefix = prefixes.get(prefixIndex);
+                    String cmd = "/ah search " + prefix;
+
+                    // Открываем чат с командой, чтобы сервер 100% прислал TAB-подсказки
+                    if (!(client.currentScreen instanceof ChatScreen)) {
+                        client.setScreen(new ChatScreen(cmd));
+                    }
+
                     waitingTabResponse = true;
-                    chestWaitStartTime = now;
+                    stepStartTime = now;
                     client.getNetworkHandler().sendPacket(
-                            new RequestCommandCompletionsC2SPacket(COMPLETION_ID, "/ah search " + letter)
+                            new RequestCommandCompletionsC2SPacket(COMPLETION_ID, cmd)
                     );
                 } else {
+                    if (client.currentScreen instanceof ChatScreen) {
+                        client.setScreen(null);
+                    }
                     itemsQueue.addAll(discoveredItems);
-                    client.player.sendMessage(Text.literal("§b[AuctionBot] §fНайдено предметов: " + itemsQueue.size() + ". Начинаю оценку цен..."), false);
+                    client.player.sendMessage(Text.literal("§b[AuctionBot] §fСбор окончен! Найдено предметов: " + itemsQueue.size()), false);
                     state = State.SEARCHING_ITEM;
                     nextActionTime = now + speed.chatDelayMs;
                 }
@@ -114,19 +143,20 @@ public class MarketScanner {
                     BotConfig.save();
                     lastFullScanTime = now;
                     state = State.IDLE;
-                    client.player.sendMessage(Text.literal("§a[AuctionBot] §fСканирование цен завершено! Перехожу к скупке."), false);
+                    client.player.sendMessage(Text.literal("§a[AuctionBot] §fВсе цены сохранены! Откройте R-Ctrl для настройки."), false);
                     return;
                 }
 
                 if (client.currentScreen != null) {
                     client.player.closeHandledScreen();
+                    client.setScreen(null);
                     nextActionTime = now + speed.guiReactDelayMs;
                     return;
                 }
 
                 currentSearchQuery = itemsQueue.poll();
                 client.getNetworkHandler().sendChatCommand("ah search " + currentSearchQuery);
-                chestWaitStartTime = now;
+                stepStartTime = now;
                 state = State.WAITING_CHEST;
                 nextActionTime = now + speed.guiReactDelayMs;
             }
@@ -137,8 +167,7 @@ public class MarketScanner {
                     client.player.closeHandledScreen();
                     state = State.SEARCHING_ITEM;
                     nextActionTime = now + speed.chatDelayMs;
-                } else if (now - chestWaitStartTime > 2500) {
-                    // Если сундук не открылся за 2.5 сек — пропускаем этот запрос
+                } else if (now - stepStartTime > 2500) {
                     state = State.SEARCHING_ITEM;
                     nextActionTime = now + speed.chatDelayMs;
                 }
@@ -147,21 +176,24 @@ public class MarketScanner {
     }
 
     public boolean handleSuggestionsPacket(CommandSuggestionsS2CPacket packet) {
-        if (state != State.COLLECTING_TABS || packet.id() != COMPLETION_ID) {
+        if (state != State.COLLECTING_TABS) {
             return false;
         }
 
         for (CommandSuggestionsS2CPacket.Suggestion suggestion : packet.suggestions()) {
             String text = suggestion.text().trim();
-            if (!text.isEmpty()) {
+            if (!text.isEmpty() && !text.startsWith("/")) {
                 discoveredItems.add(text);
             }
         }
 
-        waitingTabResponse = false;
-        alphabetIndex++;
-        nextActionTime = System.currentTimeMillis() + 50;
-        return true;
+        if (packet.id() == COMPLETION_ID) {
+            waitingTabResponse = false;
+            prefixIndex++;
+            nextActionTime = System.currentTimeMillis() + 30;
+            return true;
+        }
+        return false;
     }
 
     private void evaluateChestAndSave(GenericContainerScreen screen, MinecraftClient client) {
@@ -187,6 +219,7 @@ public class MarketScanner {
 
         if (bestUnitPrice < Double.MAX_VALUE) {
             BotConfig.INSTANCE.updateItemPrice(foundItemName, bestUnitPrice);
+            BotConfig.save();
         }
     }
 }
