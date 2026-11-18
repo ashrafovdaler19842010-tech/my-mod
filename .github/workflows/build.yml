@@ -196,7 +196,6 @@ jobs:
                                   
                                   float realHp = getRealHealth(living);
                                   
-                                  // ИСПРАВЛЕНО: Используем Component и Font.DisplayMode
                                   net.minecraft.network.chat.Component textComp = net.minecraft.network.chat.Component.literal(String.format("§c%.1f ❤", realHp));
                                   
                                   Minecraft.getInstance().font.drawInBatch(
@@ -222,10 +221,9 @@ jobs:
                   var scoreboard = living.level().getScoreboard();
                   var objective = scoreboard.getObjective("health");
                   if (objective != null) {
-                      // ИСПРАВЛЕНО: Передаем сам объект living, а не его имя
                       var score = scoreboard.getOrCreatePlayerScore(living, objective);
                       if (score != null) {
-                          return score.getScore();
+                          return score.get(); // ИСПРАВЛЕНО ЗДЕСЬ
                       }
                   }
                   return living.getHealth();
