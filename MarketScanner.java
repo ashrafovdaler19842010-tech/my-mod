@@ -4,10 +4,10 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.gui.screen.ingame.GenericContainerScreen;
 import net.minecraft.item.ItemStack;
-import net.minecraft.network.packet.c2s.play.RequestCommandCompletionsC2SPacket;
 import net.minecraft.network.packet.s2c.play.CommandSuggestionsS2CPacket;
 import net.minecraft.screen.GenericContainerScreenHandler;
 import net.minecraft.text.Text;
+import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -20,13 +20,14 @@ public class MarketScanner {
     public static final MarketScanner INSTANCE = new MarketScanner();
 
     private static final String RU_CHARS = "абвгдежзийклмнопрстуфхцчшщъыьэюя";
-    private static final String EN_CHARS = "abcdefghijklmnopqrstuvwxyz";
     private static final long SCAN_INTERVAL_MS = 30 * 60 * 1000L; // 30 минут
-    private static final int COMPLETION_ID = 987654;
 
     public enum State {
         IDLE,
-        COLLECTING_TABS,
+        OPEN_CHAT,
+        TYPE_PREFIX,
+        PRESS_TAB,
+        WAIT_TAB_RESULT,
         SEARCHING_ITEM,
         WAITING_CHEST
     }
@@ -38,22 +39,17 @@ public class MarketScanner {
 
     private final List<String> prefixes = new ArrayList<>();
     private int prefixIndex = 0;
-    private boolean waitingTabResponse = false;
+    private boolean gotSuggestionsForCurrentPrefix = false;
 
     private final Set<String> discoveredItems = new LinkedHashSet<>();
     private final Queue<String> itemsQueue = new ArrayDeque<>();
     private String currentSearchQuery = "";
 
     public MarketScanner() {
-        // Генерируем все 2-буквенные комбинации (аа..яя и aa..zz)
+        // Только русский алфавит: от "аа" до "яя"
         for (int i = 0; i < RU_CHARS.length(); i++) {
             for (int j = 0; j < RU_CHARS.length(); j++) {
                 prefixes.add("" + RU_CHARS.charAt(i) + RU_CHARS.charAt(j));
-            }
-        }
-        for (int i = 0; i < EN_CHARS.length(); i++) {
-            for (int j = 0; j < EN_CHARS.length(); j++) {
-                prefixes.add("" + EN_CHARS.charAt(i) + EN_CHARS.charAt(j));
             }
         }
     }
@@ -65,7 +61,10 @@ public class MarketScanner {
     public String getStatusText() {
         return switch (state) {
             case IDLE -> "Ожидание";
-            case COLLECTING_TABS -> "Сбор TAB (" + prefixIndex + "/" + prefixes.size() + ") найдено: " + discoveredItems.size();
+            case OPEN_CHAT, TYPE_PREFIX, PRESS_TAB, WAIT_TAB_RESULT -> {
+                String cur = prefixIndex < prefixes.size() ? prefixes.get(prefixIndex) : "яя";
+                yield "TAB [" + cur + "] (" + prefixIndex + "/" + prefixes.size() + ") Найдено: " + discoveredItems.size();
+            }
             case SEARCHING_ITEM, WAITING_CHEST -> "Скан цен (осталось: " + itemsQueue.size() + ")";
         };
     }
@@ -75,15 +74,14 @@ public class MarketScanner {
         discoveredItems.clear();
         itemsQueue.clear();
         prefixIndex = 0;
-        waitingTabResponse = false;
-        state = State.COLLECTING_TABS;
+        gotSuggestionsForCurrentPrefix = false;
+        state = State.OPEN_CHAT;
         nextActionTime = System.currentTimeMillis();
-        client.player.sendMessage(Text.literal("§b[AuctionBot] §fЗапуск сбора предметов по 2 буквам (аа..zz)..."), false);
+        client.player.sendMessage(Text.literal("§b[AuctionBot] §fСбор предметов по русским буквам (аа..яя)..."), false);
     }
 
     public void stopScan() {
         state = State.IDLE;
-        waitingTabResponse = false;
     }
 
     public void tick(MinecraftClient client) {
@@ -103,38 +101,51 @@ public class MarketScanner {
         BotConfig.SpeedMode speed = BotConfig.INSTANCE.speedMode;
 
         switch (state) {
-            case COLLECTING_TABS -> {
-                if (waitingTabResponse) {
-                    // Если сервер не ответил за 220 мс (на эти 2 буквы нет предметов) — идем к следующей паре
-                    if (now - stepStartTime > 220) {
-                        waitingTabResponse = false;
-                        prefixIndex++;
-                    }
-                    return;
-                }
+            case OPEN_CHAT -> {
+                client.setScreen(new ChatScreen(""));
+                state = State.TYPE_PREFIX;
+                nextActionTime = now + 100;
+            }
 
-                if (prefixIndex < prefixes.size()) {
-                    String prefix = prefixes.get(prefixIndex);
-                    String cmd = "/ah search " + prefix;
-
-                    // Открываем чат с командой, чтобы сервер 100% прислал TAB-подсказки
-                    if (!(client.currentScreen instanceof ChatScreen)) {
-                        client.setScreen(new ChatScreen(cmd));
-                    }
-
-                    waitingTabResponse = true;
-                    stepStartTime = now;
-                    client.getNetworkHandler().sendPacket(
-                            new RequestCommandCompletionsC2SPacket(COMPLETION_ID, cmd)
-                    );
-                } else {
+            case TYPE_PREFIX -> {
+                if (prefixIndex >= prefixes.size()) {
+                    // Дошли до "яя" — закрываем чат и переходим к оценке цен
                     if (client.currentScreen instanceof ChatScreen) {
                         client.setScreen(null);
                     }
                     itemsQueue.addAll(discoveredItems);
-                    client.player.sendMessage(Text.literal("§b[AuctionBot] §fСбор окончен! Найдено предметов: " + itemsQueue.size()), false);
+                    client.player.sendMessage(Text.literal("§b[AuctionBot] §fДошли до ЯЯ! Найдено предметов: " + itemsQueue.size() + ". Оцениваю цены..."), false);
                     state = State.SEARCHING_ITEM;
                     nextActionTime = now + speed.chatDelayMs;
+                    return;
+                }
+
+                String prefix = prefixes.get(prefixIndex);
+                String cmd = "/ah search " + prefix;
+
+                // Меняем текст прямо в открытом чате без пересоздания окна
+                client.setScreen(new ChatScreen(cmd));
+                gotSuggestionsForCurrentPrefix = false;
+                state = State.PRESS_TAB;
+                nextActionTime = now + 80;
+            }
+
+            case PRESS_TAB -> {
+                if (client.currentScreen instanceof ChatScreen chatScreen) {
+                    // Имитируем реальное нажатие клавиши TAB в открытом чате
+                    chatScreen.keyPressed(GLFW.GLFW_KEY_TAB, 0, 0);
+                }
+                stepStartTime = now;
+                state = State.WAIT_TAB_RESULT;
+                nextActionTime = now + 120;
+            }
+
+            case WAIT_TAB_RESULT -> {
+                // Если сервер прислал список или прошло 350 мс (на эту пару ничего нет) — идем к следующей паре
+                if (gotSuggestionsForCurrentPrefix || (now - stepStartTime > 350)) {
+                    prefixIndex++;
+                    state = State.TYPE_PREFIX;
+                    nextActionTime = now + 40;
                 }
             }
 
@@ -143,7 +154,7 @@ public class MarketScanner {
                     BotConfig.save();
                     lastFullScanTime = now;
                     state = State.IDLE;
-                    client.player.sendMessage(Text.literal("§a[AuctionBot] §fВсе цены сохранены! Откройте R-Ctrl для настройки."), false);
+                    client.player.sendMessage(Text.literal("§a[AuctionBot] §fВсе цены запомнены! Начинаю покупку."), false);
                     return;
                 }
 
@@ -176,23 +187,23 @@ public class MarketScanner {
     }
 
     public boolean handleSuggestionsPacket(CommandSuggestionsS2CPacket packet) {
-        if (state != State.COLLECTING_TABS) {
+        if (state != State.PRESS_TAB && state != State.WAIT_TAB_RESULT) {
             return false;
         }
 
+        boolean addedAny = false;
         for (CommandSuggestionsS2CPacket.Suggestion suggestion : packet.suggestions()) {
             String text = suggestion.text().trim();
-            if (!text.isEmpty() && !text.startsWith("/")) {
+            if (!text.isEmpty() && !text.startsWith("/") && !text.contains("<")) {
                 discoveredItems.add(text);
+                addedAny = true;
             }
         }
 
-        if (packet.id() == COMPLETION_ID) {
-            waitingTabResponse = false;
-            prefixIndex++;
-            nextActionTime = System.currentTimeMillis() + 30;
-            return true;
+        if (addedAny) {
+            gotSuggestionsForCurrentPrefix = true;
         }
+        // Не отменяем пакет (возвращаем false), чтобы список подсказок отрисовывался в чате
         return false;
     }
 
