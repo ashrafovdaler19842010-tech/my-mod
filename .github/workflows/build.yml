@@ -10,20 +10,16 @@ jobs:
       - run: unzip -o mod.zip || true
       - name: Build Mod Sources
         run: |
-          # 1. ПОЛНАЯ ОЧИСТКА СТАРЫХ ФАЙЛОВ И КЭША
           rm -rf build/
           rm -f src/main/resources/template-mod.mixins.json
           rm -f src/main/resources/template-mod.client.mixins.json
           rm -f src/client/resources/template-mod.mixins.json
           rm -f src/client/resources/template-mod.client.mixins.json
           rm -f src/main/resources/*.accesswidener
-          rm -f src/client/resources/*.accesswidener
 
-          # 2. ПОНИЖАЕМ ТРЕБОВАНИЯ К FABRIC LOADER
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
 
-          # 3. ПОЛНОСТЬЮ ПЕРЕСОЗДАЕМ fabric.mod.json (с явным указанием путей)
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
@@ -53,13 +49,11 @@ jobs:
           }
           EOF
 
-          # 4. СОЗДАЕМ ЕДИНСТВЕННЫЙ ЧИСТЫЙ ФАЙЛ ACCESS WIDENER
           cat << 'EOF' > src/main/resources/template-mod.accesswidener
           accessWidener v2 named
           accessible field net/minecraft/world/entity/LivingEntity noJumpDelay I
           EOF
 
-          # 5. СОЗДАЕМ КОНФИГ МИКСИНОВ
           cat << 'EOF' > src/main/resources/template-mod.mixins.json
           {
             "required": true,
@@ -76,7 +70,6 @@ jobs:
           }
           EOF
 
-          # 6. НАСТРАИВАЕМ build.gradle (гарантируем, что Loom видит файл)
           if ! grep -q "accessWidenerPath" build.gradle; then
             echo "" >> build.gradle
             echo "loom {" >> build.gradle
@@ -96,7 +89,6 @@ jobs:
 
           echo "tasks.withType(JavaCompile).configureEach { options.release = 21 }" >> build.gradle
 
-          # 7. ОЧИЩАЕМ JAVA-КЛАССЫ И СОЗДАЕМ НОВЫЕ
           rm -rf src/client/java/com/example/client/*
           mkdir -p src/client/java/com/example/client/mixin
           
@@ -132,7 +124,7 @@ jobs:
           }
           EOF
 
-          # MIXIN: BLINK (ФЛАГИ НА МЕСТЕ)
+          # MIXIN: BLINK (НЕ ТРОНУТ)
           cat << 'EOF' > src/client/java/com/example/client/mixin/ConnectionMixin.java
           package com.example.client.mixin;
 
@@ -158,6 +150,7 @@ jobs:
               private void onSend(Packet<?> packet, CallbackInfo ci) {
                   if (flushing) return;
 
+                  // Блокируем только для режимов Blink
                   if (GrimConfig.INSTANCE.enabled && (GrimConfig.INSTANCE.mode == 0 || GrimConfig.INSTANCE.mode == 1)) {
                       if (packet instanceof ServerboundMovePlayerPacket) {
                           buffer.add(packet);
@@ -209,13 +202,14 @@ jobs:
           }
           EOF
 
-          # ГЛАВНЫЙ КЛАСС (Fly через Desync / Hover)
+          # ГЛАВНЫЙ КЛАСС (Ghost Fly)
           cat << 'EOF' > src/client/java/com/example/client/GrimBypassClient.java
           package com.example.client;
 
           import com.mojang.blaze3d.platform.InputConstants;
           import net.fabricmc.api.ClientModInitializer;
           import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+          import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
           import net.minecraft.sounds.SoundEvents;
           import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
@@ -223,6 +217,7 @@ jobs:
           public class GrimBypassClient implements ClientModInitializer {
               private static boolean xKeyWasDown = false;
               private static boolean rCtrlWasDown = false;
+              private static int tickTimer = 0;
 
               @Override
               public void onInitializeClient() {
@@ -231,6 +226,7 @@ jobs:
                   ClientTickEvents.END_CLIENT_TICK.register(client -> {
                       if (client.player == null || client.getWindow() == null) return;
                       long win = client.getWindow().getWindow();
+                      tickTimer++;
 
                       boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
@@ -266,27 +262,27 @@ jobs:
                           }
                       }
                       else if (GrimConfig.INSTANCE.mode == 4) { 
-                          if (!client.player.onGround()) {
-                              client.player.setOnGround(true);
-                              client.player.setDeltaMovement(new Vec3(
-                                  client.player.getDeltaMovement().x,
-                                  0.0,
-                                  client.player.getDeltaMovement().z
+                          // GHOST FLY (INERTIA) - Копим инерцию и летаем
+                          if (client.options.keyJump.isDown()) {
+                              // Даем ускорение вверх
+                              client.player.setDeltaMovement(client.player.getDeltaMovement().add(0, 0.15, 0));
+                          } else if (client.options.keyShift.isDown()) {
+                              // Опускаемся
+                              client.player.setDeltaMovement(client.player.getDeltaMovement().add(0, -0.15, 0));
+                          } else {
+                              // Зависаем (гасим падение)
+                              client.player.setDeltaMovement(client.player.getDeltaMovement().multiply(1, 0, 1));
+                          }
+
+                          // Каждые 15 тиков сбрасываем таймер падения (NoFall)
+                          if (tickTimer % 15 == 0) {
+                              client.player.connection.send(new ServerboundMovePlayerPacket.Pos(
+                                  client.player.getX(),
+                                  client.player.getY(),
+                                  client.player.getZ(),
+                                  true, // Говорим серверу, что мы на земле (Ghost Block)
+                                  client.player.isHorizontalCollision()
                               ));
-                              
-                              if (client.options.keyJump.isDown()) {
-                                  client.player.setDeltaMovement(new Vec3(
-                                      client.player.getDeltaMovement().x,
-                                      0.1,
-                                      client.player.getDeltaMovement().z
-                                  ));
-                              } else if (client.options.keyShift.isDown()) {
-                                  client.player.setDeltaMovement(new Vec3(
-                                      client.player.getDeltaMovement().x,
-                                      -0.1,
-                                      client.player.getDeltaMovement().z
-                                  ));
-                              }
                           }
                       }
                   });
@@ -316,7 +312,7 @@ jobs:
                       "Blink 300ms (Risky)",
                       "Head-Hitting (Auto)",
                       "Spider (Wall Climb)",
-                      "Desync Fly (Hover)"
+                      "Ghost Fly (Inertia)"
                   };
 
                   for (int i = 0; i < 5; i++) {
