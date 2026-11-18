@@ -16,7 +16,7 @@ jobs:
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21.8/' gradle.properties
 
-          # 2. ДОБАВЛЯЕМ METEOR CLIENT В ЗАВИСИМОСТИ (Чтоб код компилировался)
+          # 2. ДОБАВЛЯЕМ METEOR CLIENT В ЗАВИСИМОСТИ
           if ! grep -q "maven.meteordev.org" build.gradle; then
             cat << 'EOF' >> build.gradle
             
