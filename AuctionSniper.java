@@ -15,6 +15,7 @@ public class AuctionSniper {
     public enum SniperState {
         OFF,
         OPENING_AH,
+        WAIT_HUMAN_REACTION,
         SCANNING_AH,
         SELLING_BOUGHT,
         SWITCHING_HUB,
@@ -30,7 +31,13 @@ public class AuctionSniper {
     private long nextActionTime = 0;
     private long stateStartTime = 0;
     private int refreshCycles = 0;
+    private int cyclesBeforePause = 18;
     private long lastStorageCheckTime = 0;
+
+    // Плавный легитный Анти-АФК
+    private long nextAntiAfkTime = 0;
+    private int smoothTurnTicks = 0;
+    private float turnStepYaw = 0;
 
     private String pendingSellItemName = "";
     private double pendingSellUnitPrice100 = 0;
@@ -40,19 +47,26 @@ public class AuctionSniper {
         return state != SniperState.OFF;
     }
 
+    private long jitter(long baseMs, int minExtra, int maxExtra) {
+        return baseMs + minExtra + random.nextInt(Math.max(1, maxExtra - minExtra + 1));
+    }
+
     public void toggleBot(MinecraftClient client) {
         if (state == SniperState.OFF) {
             state = SniperState.OPENING_AH;
             refreshCycles = 0;
+            cyclesBeforePause = 14 + random.nextInt(12);
             lastStorageCheckTime = System.currentTimeMillis();
-            nextActionTime = System.currentTimeMillis();
+            nextAntiAfkTime = System.currentTimeMillis() + 20_000L + random.nextInt(15_000);
+            nextActionTime = System.currentTimeMillis() + jitter(200, 100, 300);
             if (client.player != null) {
-                client.player.sendMessage(Text.literal("§a[AuctionBot] §fБот ЗАПУЩЕН!"), false);
+                client.player.sendMessage(Text.literal("§a[AuctionBot] §fЛегитный режим ЗАПУЩЕН."), false);
             }
         } else {
             state = SniperState.OFF;
-            MarketScanner.INSTANCE.stopScan();
+            smoothTurnTicks = 0;
             if (client.player != null) {
+                client.player.setSneaking(false);
                 client.player.sendMessage(Text.literal("§c[AuctionBot] §fБот ОСТАНОВЛЕН."), false);
             }
         }
@@ -60,29 +74,42 @@ public class AuctionSniper {
 
     public String getHudStatus() {
         if (state == SniperState.OFF) return "§cВЫКЛ";
-        if (MarketScanner.INSTANCE.isRunning()) return "§b" + MarketScanner.INSTANCE.getStatusText();
-        return "§aСкупка §7(Цикл: " + refreshCycles + "/50)";
+        return "§aЛегит-скупка §7(" + refreshCycles + "/50 | База: " + BotConfig.INSTANCE.items.size() + ")";
     }
 
     public void tick(MinecraftClient client) {
         if (client.player == null || client.getNetworkHandler() == null || client.interactionManager == null) return;
         if (state == SniperState.OFF) return;
 
-        if (MarketScanner.INSTANCE.isRunning()) {
-            return;
+        long now = System.currentTimeMillis();
+
+        // 1. Плавный естественный Анти-АФК (раз в 25-45 секунд, без резких прыжков и дерганий)
+        if (smoothTurnTicks > 0) {
+            client.player.setYaw(client.player.getYaw() + turnStepYaw);
+            smoothTurnTicks--;
+            if (smoothTurnTicks == 0) {
+                client.player.setSneaking(false);
+            }
+        } else if (now >= nextAntiAfkTime) {
+            nextAntiAfkTime = now + 25_000L + random.nextInt(20_000);
+            smoothTurnTicks = 6 + random.nextInt(6);
+            float totalAngle = (random.nextBoolean() ? 1f : -1f) * (2.5f + random.nextFloat() * 5.0f);
+            turnStepYaw = totalAngle / smoothTurnTicks;
+            if (client.currentScreen == null && random.nextBoolean()) {
+                client.player.setSneaking(true);
+            }
         }
 
-        long now = System.currentTimeMillis();
         if (now < nextActionTime) return;
 
         BotConfig.SpeedMode speed = BotConfig.INSTANCE.speedMode;
 
-        // Проверка хранилища раз в минуту (60 000 мс)
+        // Проверка хранилища раз в ~65-80 секунд
         if ((state == SniperState.OPENING_AH || state == SniperState.SCANNING_AH)
-                && (now - lastStorageCheckTime >= 60_000L)) {
+                && (now - lastStorageCheckTime >= 65_000L + random.nextInt(15_000))) {
             lastStorageCheckTime = now;
             state = SniperState.STORAGE_OPEN_AH;
-            nextActionTime = now;
+            nextActionTime = now + jitter(300, 150, 400);
             return;
         }
 
@@ -90,93 +117,31 @@ public class AuctionSniper {
             case OPENING_AH -> {
                 if (client.currentScreen != null) {
                     client.player.closeHandledScreen();
-                    nextActionTime = now + speed.guiReactDelayMs;
+                    nextActionTime = now + jitter(speed.guiReactDelayMs, 150, 350);
                     return;
                 }
                 client.getNetworkHandler().sendChatCommand("ah");
                 stateStartTime = now;
-                state = SniperState.SCANNING_AH;
-                nextActionTime = now + speed.guiReactDelayMs;
+                state = SniperState.WAIT_HUMAN_REACTION;
+                nextActionTime = now + jitter(speed.guiReactDelayMs, 220, 420);
             }
 
-            case SCANNING_AH -> {
-                if (!(client.currentScreen instanceof GenericContainerScreen containerScreen)) {
-                    if (now - stateStartTime > 3000) {
-                        state = SniperState.OPENING_AH;
-                    }
-                    return;
-                }
-
-                GenericContainerScreenHandler handler = containerScreen.getScreenHandler();
-                int rows = handler.getRows();
-                int mainSlots = Math.min(45, rows * 9);
-
-                // 1. Проверяем первые 45 слотов на выгодные предметы
-                for (int i = 0; i < mainSlots; i++) {
-                    ItemStack stack = handler.slots.get(i).getStack();
-                    if (stack.isEmpty()) continue;
-
-                    String cleanName = PriceParser.getCleanItemName(stack);
-                    BotConfig.ItemData data = BotConfig.INSTANCE.items.get(cleanName.toLowerCase());
-                    if (data == null || !data.enabled || data.unitPrice <= 0) continue;
-
-                    double currentUnitPrice = PriceParser.parseUnitPrice(stack, client);
-                    if (currentUnitPrice <= 0) continue;
-
-                    double maxAllowedUnitPrice = data.unitPrice * (BotConfig.INSTANCE.buyPercent / 100.0);
-
-                    if (currentUnitPrice <= maxAllowedUnitPrice) {
-                        client.interactionManager.clickSlot(
-                                handler.syncId, i, 0, SlotActionType.QUICK_MOVE, client.player
-                        );
-
-                        pendingSellItemName = cleanName;
-                        pendingSellUnitPrice100 = data.unitPrice;
-                        pendingSellCount = stack.getCount();
-
-                        client.player.sendMessage(Text.literal(
-                                "§a[Куплено] §f" + cleanName + " x" + pendingSellCount +
-                                        " по " + (long) currentUnitPrice + "/шт."
-                        ), false);
-
-                        client.player.closeHandledScreen();
-                        state = SniperState.SELLING_BOUGHT;
-                        nextActionTime = now + speed.chatDelayMs;
-                        return;
-                    }
-                }
-
-                // 2. После 50 циклов обновления уходим в /hub -> /an103..108
-                if (refreshCycles >= 50) {
-                    refreshCycles = 0;
-                    client.player.closeHandledScreen();
-                    state = SniperState.SWITCHING_HUB;
-                    nextActionTime = now + speed.chatDelayMs;
-                    return;
-                }
-
-                // 3. Ищем кнопку "Обновить" в последнем ряду (слоты 45..53)
-                int refreshSlot = findButtonSlot(handler, "обновить", "refresh", "обновление");
-                if (refreshSlot != -1) {
-                    client.interactionManager.clickSlot(
-                            handler.syncId, refreshSlot, 0, SlotActionType.PICKUP, client.player
-                    );
-                    refreshCycles++;
-                    nextActionTime = now + speed.refreshDelayMs;
-                } else {
-                    client.player.closeHandledScreen();
+            case WAIT_HUMAN_REACTION -> {
+                if (client.currentScreen instanceof GenericContainerScreen) {
+                    state = SniperState.SCANNING_AH;
+                    nextActionTime = now + jitter(180, 140, 340);
+                } else if (now - stateStartTime > 3500) {
                     state = SniperState.OPENING_AH;
-                    nextActionTime = now + speed.chatDelayMs;
+                    nextActionTime = now + jitter(500, 200, 500);
                 }
             }
             case SELLING_BOUGHT -> {
                 if (client.currentScreen != null) {
                     client.player.closeHandledScreen();
-                    nextActionTime = now + speed.guiReactDelayMs;
+                    nextActionTime = now + jitter(350, 150, 350);
                     return;
                 }
 
-                // Ищем купленный предмет в инвентаре игрока (слоты 0..35)
                 int foundInvSlot = -1;
                 int actualCount = pendingSellCount;
                 for (int i = 0; i < 36; i++) {
@@ -213,7 +178,7 @@ public class AuctionSniper {
                 }
 
                 state = SniperState.OPENING_AH;
-                nextActionTime = now + speed.chatDelayMs;
+                nextActionTime = now + jitter(750, 300, 650);
             }
 
             case SWITCHING_HUB -> {
@@ -222,32 +187,31 @@ public class AuctionSniper {
                 }
                 client.getNetworkHandler().sendChatCommand("hub");
                 state = SniperState.SWITCHING_ANARCHY;
-                nextActionTime = now + 1500L;
+                nextActionTime = now + jitter(2200, 600, 1400);
             }
 
             case SWITCHING_ANARCHY -> {
-                int anarchyNum = 103 + random.nextInt(6); // От 103 до 108 включительно
+                int anarchyNum = 103 + random.nextInt(6);
                 client.getNetworkHandler().sendChatCommand("an" + anarchyNum);
                 client.player.sendMessage(Text.literal("§d[AuctionBot] §fПереход на /an" + anarchyNum), false);
                 state = SniperState.OPENING_AH;
-                nextActionTime = now + 2000L;
+                nextActionTime = now + jitter(3000, 800, 1600);
             }
-
             case STORAGE_OPEN_AH -> {
                 if (client.currentScreen != null) {
                     client.player.closeHandledScreen();
-                    nextActionTime = now + speed.guiReactDelayMs;
+                    nextActionTime = now + jitter(350, 150, 300);
                     return;
                 }
                 client.getNetworkHandler().sendChatCommand("ah");
                 stateStartTime = now;
                 state = SniperState.STORAGE_WAIT_MAIN;
-                nextActionTime = now + speed.guiReactDelayMs;
+                nextActionTime = now + jitter(500, 200, 400);
             }
 
             case STORAGE_WAIT_MAIN -> {
                 if (!(client.currentScreen instanceof GenericContainerScreen containerScreen)) {
-                    if (now - stateStartTime > 3000) state = SniperState.OPENING_AH;
+                    if (now - stateStartTime > 3500) state = SniperState.OPENING_AH;
                     return;
                 }
 
@@ -259,17 +223,17 @@ public class AuctionSniper {
                     );
                     stateStartTime = now;
                     state = SniperState.STORAGE_WAIT_INNER;
-                    nextActionTime = now + speed.guiReactDelayMs;
+                    nextActionTime = now + jitter(550, 200, 400);
                 } else {
                     client.player.closeHandledScreen();
                     state = SniperState.OPENING_AH;
-                    nextActionTime = now + speed.chatDelayMs;
+                    nextActionTime = now + jitter(600, 200, 400);
                 }
             }
 
             case STORAGE_WAIT_INNER -> {
                 if (!(client.currentScreen instanceof GenericContainerScreen containerScreen)) {
-                    if (now - stateStartTime > 3000) state = SniperState.OPENING_AH;
+                    if (now - stateStartTime > 3500) state = SniperState.OPENING_AH;
                     return;
                 }
 
@@ -295,14 +259,14 @@ public class AuctionSniper {
 
                 client.player.closeHandledScreen();
                 state = SniperState.OPENING_AH;
-                nextActionTime = now + speed.chatDelayMs;
+                nextActionTime = now + jitter(650, 250, 500);
             }
         }
     }
 
     private int findButtonSlot(GenericContainerScreenHandler handler, String... keywords) {
         int totalSlots = handler.getRows() * 9;
-        int startSlot = Math.max(0, totalSlots - 9); // Последний ряд (слоты 45..53)
+        int startSlot = Math.max(0, totalSlots - 9);
 
         for (int i = startSlot; i < totalSlots; i++) {
             ItemStack stack = handler.slots.get(i).getStack();
