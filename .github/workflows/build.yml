@@ -45,7 +45,7 @@ jobs:
 
           mkdir -p src/client/java/com/example/client
 
-          # --- ГЕНЕРАЦИЯ MainClient.java (Полный порт ZKillaura) ---
+          # --- ГЕНЕРАЦИЯ MainClient.java (Исправлен доступ к слоту) ---
           cat << 'EOF' > src/client/java/com/example/client/MainClient.java
           package com.example.client;
 
@@ -161,8 +161,8 @@ jobs:
                               if (swapTimer-- > 0) return;
                               int axeSlot = findAxeSlot(client.player);
                               if (axeSlot != -1 && targetPlayer.isBlocking()) {
-                                  originalSlot = client.player.getInventory().selected;
-                                  client.player.getInventory().selected = axeSlot;
+                                  originalSlot = client.player.getInventory().getSelectedSlot(); // ИСПРАВЛЕНО
+                                  client.player.getInventory().setSelectedSlot(axeSlot); // ИСПРАВЛЕНО
                                   shieldState = 2; // Attack
                                   hitTimer = calcDelay(hitDelayMode, hitDelayValue);
                               } else {
@@ -178,15 +178,15 @@ jobs:
                                   shieldState = 3; // SwapBack
                                   swapBackTimer = calcDelay(swapBackDelayMode, swapBackDelayValue);
                               } else {
-                                  client.player.getInventory().selected = originalSlot;
+                                  client.player.getInventory().setSelectedSlot(originalSlot); // ИСПРАВЛЕНО
                                   resetShield();
                               }
                           }
 
                           if (shieldState == 3) { // SwapBack
                               if (swapBackTimer-- > 0) return;
-                              if (originalSlot != client.player.getInventory().selected) {
-                                  client.player.getInventory().selected = originalSlot;
+                              if (originalSlot != client.player.getInventory().getSelectedSlot()) { // ИСПРАВЛЕНО
+                                  client.player.getInventory().setSelectedSlot(originalSlot); // ИСПРАВЛЕНО
                               }
                               resetShield();
                           }
@@ -231,7 +231,6 @@ jobs:
               }
 
               private int calcDelay(int mode, int value) {
-                  // Если mode == 2 (Random), но у нас нет минималки в этой простой версии, просто юзаем value
                   return value;
               }
 
