@@ -28,6 +28,9 @@ jobs:
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^yarn_mappings=.*/yarn_mappings=1.21.8+build.1/' gradle.properties
           sed -i 's/^fabric_version=.*/fabric_version=0.129.0+1.21.8/' gradle.properties
+          sed -i 's/loom.officialMojangMappings()/"net.fabricmc:yarn:1.21.8+build.1:v2"/g' build.gradle || true
+          sed -i 's/loom.officialMojangMappings()/"net.fabricmc:yarn:1.21.8+build.1:v2"/g' build.gradle.kts || true
+
 
           rm -rf src/main/java/*
           mkdir -p src/main/java/com/auctionbot/mixin
