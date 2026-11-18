@@ -12,12 +12,33 @@ jobs:
       
       - name: Configure Project
         run: |
+          # 1. НАСТРОЙКА ВЕРСИЙ
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21.8/' gradle.properties
 
-          rm -rf src
+          # 2. ДОБАВЛЯЕМ METEOR CLIENT В ЗАВИСИМОСТИ (Чтоб код компилировался)
+          if ! grep -q "maven.meteordev.org" build.gradle; then
+            cat << 'EOF' >> build.gradle
+            
+            repositories {
+                maven { url 'https://maven.meteordev.org/releases' }
+            }
+            
+            dependencies {
+                modImplementation "meteordevelopment:meteor-client:0.5.8-SNAPSHOT"
+            }
+            EOF
+          fi
 
+          # 3. ПОЛНАЯ ОЧИСТКА И СОЗДАНИЕ ПАПОК
+          rm -rf src
           mkdir -p src/main/resources
+          mkdir -p src/client/java/com/example/client
+          mkdir -p src/client/java/zgoly/meteorist
+          mkdir -p src/client/java/zgoly/meteorist/utils
+          mkdir -p src/client/java/zgoly/meteorist/modules
+
+          # 4. fabric.mod.json (Указываем, что это Meteor Addon)
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
             "schemaVersion": 1,
@@ -30,7 +51,7 @@ jobs:
             "license": "MIT",
             "environment": "client",
             "entrypoints": {
-              "client": [
+              "meteor": [
                 "com.example.client.MainClient"
               ]
             },
@@ -38,282 +59,592 @@ jobs:
               "fabricloader": ">=0.16.0",
               "minecraft": "~1.21.8",
               "java": ">=21",
-              "fabric-api": "*"
+              "fabric-api": "*",
+              "meteor-client": "*"
             }
           }
           EOF
 
-          mkdir -p src/client/java/com/example/client
-
-          # --- ГЕНЕРАЦИЯ MainClient.java (Исправлен доступ к слоту) ---
+          # 5. КЛАСС ЗАПУСКА АДДОНА
           cat << 'EOF' > src/client/java/com/example/client/MainClient.java
           package com.example.client;
 
-          import com.mojang.blaze3d.platform.InputConstants;
-          import net.fabricmc.api.ClientModInitializer;
-          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-          import net.minecraft.client.Minecraft;
-          import net.minecraft.sounds.SoundEvents;
-          import net.minecraft.world.InteractionHand;
-          import net.minecraft.world.entity.Entity;
-          import net.minecraft.world.entity.player.Player;
-          import net.minecraft.world.item.AxeItem;
-          import net.minecraft.world.item.Item;
-          import net.minecraft.world.item.Items;
-          import net.minecraft.world.phys.EntityHitResult;
-          import net.minecraft.world.phys.HitResult;
-          import org.lwjgl.glfw.GLFW;
+          import meteordevelopment.meteorclient.addons.MeteorAddon;
+          import meteordevelopment.meteorclient.systems.modules.Category;
+          import meteordevelopment.meteorclient.systems.modules.Modules;
+          import zgoly.meteorist.modules.ZKillaura;
 
-          public class MainClient implements ClientModInitializer {
-              // НАСТРОЙКИ
-              public static boolean enabled = false;
-              public static double range = 4.5;
-              public static boolean ignoreCreative = true;
+          public class MainClient extends MeteorAddon {
+              public static final Category CATEGORY = new Category("Custom");
               
-              // OnFall (Криты)
-              public static int onFallMode = 1; // 0=None, 1=Value, 2=Random
-              public static float onFallValue = 0.25f;
-              public static float onFallMinRandom = 0.2f;
-              public static float onFallMaxRandom = 0.4f;
-              public static float randomOnFallFloat = 0;
-
-              // HitSpeed (Скорость удара)
-              public static int hitSpeedMode = 1; // 0=None, 1=Value, 2=Random
-              public static float hitSpeedValue = 0f;
-              public static float hitSpeedMinRandom = 0f;
-              public static float hitSpeedMaxRandom = 0f;
-              public static float randomHitSpeedFloat = 0;
-
-              // Shield (Щиты)
-              public static int shieldMode = 1; // 0=Ignore, 1=Break, 2=None
-              public static int swapDelayMode = 1; // 1=Value, 2=Random
-              public static int swapDelayValue = 2;
-              public static int hitDelayMode = 1;
-              public static int hitDelayValue = 2;
-              public static int swapBackDelayMode = 1;
-              public static int swapBackDelayValue = 2;
-
-              public static boolean swingHand = true;
-
-              // Стейт-машина
-              private static boolean xKeyWasDown = false;
-              private static boolean rCtrlWasDown = false;
-              private static int shieldState = 0; // 0=Idle, 1=SwapAxe, 2=Attack, 3=SwapBack
-              private static int swapTimer = 0, hitTimer = 0, swapBackTimer = 0;
-              private static int originalSlot = -1;
-
               @Override
-              public void onInitializeClient() {
-                  ClientTickEvents.END_CLIENT_TICK.register(client -> {
-                      if (client.player == null || client.getWindow() == null || client.level == null) return;
-                      long win = client.getWindow().getWindow();
-
-                      // Меню
-                      boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
-                      if (rCtrl && !rCtrlWasDown) {
-                          if (client.screen instanceof GuiScreen) client.setScreen(null);
-                          else if (client.screen == null) client.setScreen(new GuiScreen());
-                      }
-                      rCtrlWasDown = rCtrl;
-
-                      // Вкл/Выкл
-                      boolean xDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_X);
-                      if (xDown && !xKeyWasDown && client.screen == null) {
-                          enabled = !enabled;
-                          if (enabled) {
-                              client.player.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                          } else {
-                              client.player.playSound(SoundEvents.NOTE_BLOCK_BASS.value(), 1.0f, 1.0f);
-                              resetShield();
-                          }
-                      }
-                      xKeyWasDown = xDown;
-
-                      if (!enabled || client.gameMode == null) return;
-
-                      // --- ЛОГИКА ИЗ ZKILLAURA ---
-                      
-                      // 1. Рейкаст (как MeteoristUtils.getCrosshairTarget)
-                      HitResult hitResult = client.player.pick(range, 1.0f, false);
-                      if (hitResult == null || hitResult.getType() != HitResult.Type.ENTITY) {
-                          resetShield();
-                          return;
-                      }
-
-                      Entity entity = ((EntityHitResult) hitResult).getEntity();
-
-                      // 2. Проверка на игрока (игнорим мобов)
-                      if (!(entity instanceof Player targetPlayer)) return;
-                      if (targetPlayer == client.player || targetPlayer.isDeadOrDying()) return;
-                      if (ignoreCreative && targetPlayer.isCreative()) return;
-
-                      // 3. Логика ломания щитов
-                      if (shieldMode == 1 && targetPlayer.isBlocking()) { // Break
-                          if (shieldState == 0) { // Idle
-                              int axeSlot = findAxeSlot(client.player);
-                              if (axeSlot != -1) {
-                                  shieldState = 1; // SwapAxe
-                                  swapTimer = calcDelay(swapDelayMode, swapDelayValue);
-                              }
-                          }
-
-                          if (shieldState == 1) { // SwapAxe
-                              if (swapTimer-- > 0) return;
-                              int axeSlot = findAxeSlot(client.player);
-                              if (axeSlot != -1 && targetPlayer.isBlocking()) {
-                                  originalSlot = client.player.getInventory().getSelectedSlot(); // ИСПРАВЛЕНО
-                                  client.player.getInventory().setSelectedSlot(axeSlot); // ИСПРАВЛЕНО
-                                  shieldState = 2; // Attack
-                                  hitTimer = calcDelay(hitDelayMode, hitDelayValue);
-                              } else {
-                                  resetShield();
-                              }
-                          }
-
-                          if (shieldState == 2) { // Attack
-                              if (hitTimer-- > 0) return;
-                              if (targetPlayer.isBlocking()) {
-                                  client.gameMode.attack(client.player, targetPlayer);
-                                  if (swingHand) client.player.swing(InteractionHand.MAIN_HAND);
-                                  shieldState = 3; // SwapBack
-                                  swapBackTimer = calcDelay(swapBackDelayMode, swapBackDelayValue);
-                              } else {
-                                  client.player.getInventory().setSelectedSlot(originalSlot); // ИСПРАВЛЕНО
-                                  resetShield();
-                              }
-                          }
-
-                          if (shieldState == 3) { // SwapBack
-                              if (swapBackTimer-- > 0) return;
-                              if (originalSlot != client.player.getInventory().getSelectedSlot()) { // ИСПРАВЛЕНО
-                                  client.player.getInventory().setSelectedSlot(originalSlot); // ИСПРАВЛЕНО
-                              }
-                              resetShield();
-                          }
-
-                          if (shieldState == 2 || shieldState == 3) return;
-                      }
-
-                      // 4. OnFall (Криты)
-                      if (onFallMode != 0) {
-                          float onFall = onFallMode == 1 ? onFallValue : randomOnFallFloat;
-                          if (!(client.player.fallDistance > onFall)) return;
-                      }
-
-                      // 5. HitSpeed (Задержка удара)
-                      if (hitSpeedMode != 0) {
-                          float hitSpeed = hitSpeedMode == 1 ? hitSpeedValue : randomHitSpeedFloat;
-                          if ((client.player.getAttackStrengthScale(hitSpeed) * 17.0F) < 16) return;
-                      }
-
-                      // 6. АТАКА
-                      client.gameMode.attack(client.player, targetPlayer);
-                      if (swingHand) client.player.swing(InteractionHand.MAIN_HAND);
-
-                      // Обновляем рандомные значения после удара
-                      if (onFallMode == 2) {
-                          randomOnFallFloat = onFallMinRandom + client.level.getRandom().nextFloat() * (onFallMaxRandom - onFallMinRandom);
-                      }
-                      if (hitSpeedMode == 2) {
-                          randomHitSpeedFloat = hitSpeedMinRandom + client.level.getRandom().nextFloat() * (hitSpeedMaxRandom - hitSpeedMinRandom);
-                      }
-                  });
+              public void onInitialize() {
+                  Modules.get().add(new ZKillaura());
               }
-
-              private int findAxeSlot(Player player) {
-                  for (int i = 0; i < 9; i++) {
-                      Item item = player.getInventory().getItem(i).getItem();
-                      if (item instanceof AxeItem || item == Items.NETHERITE_AXE) {
-                          return i;
-                      }
-                  }
-                  return -1;
+              
+              @Override
+              public void onRegisterCategories() {
+                  Modules.registerCategory(CATEGORY);
               }
-
-              private int calcDelay(int mode, int value) {
-                  return value;
-              }
-
-              private void resetShield() {
-                  shieldState = 0;
-                  swapTimer = 0;
-                  hitTimer = 0;
-                  swapBackTimer = 0;
-                  originalSlot = -1;
+              
+              @Override
+              public String getPackage() {
+                  return "com.example.client";
               }
           }
           EOF
 
-          # --- ГЕНЕРАЦИЯ GuiScreen.java ---
-          cat << 'EOF' > src/client/java/com/example/client/GuiScreen.java
-          package com.example.client;
+          # 6. ЗАГЛУШКА ДЛЯ Meteorist.java
+          cat << 'EOF' > src/client/java/zgoly/meteorist/Meteorist.java
+          package zgoly.meteorist;
 
-          import net.minecraft.client.gui.GuiGraphics;
-          import net.minecraft.client.gui.components.Button;
-          import net.minecraft.client.gui.screens.Screen;
-          import net.minecraft.network.chat.Component;
+          import meteordevelopment.meteorclient.systems.modules.Category;
 
-          public class GuiScreen extends Screen {
-              public GuiScreen() { super(Component.literal("Trigger Bot Settings")); }
+          public class Meteorist {
+              public static final Category CATEGORY = new Category("Meteorist");
+          }
+          EOF
+
+          # 7. ЗАГЛУШКА ДЛЯ MeteoristUtils.java
+          cat << 'EOF' > src/client/java/zgoly/meteorist/utils/MeteoristUtils.java
+          package zgoly.meteorist.utils;
+
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.phys.*;
+          import net.minecraft.world.level.ClipContext;
+          import java.util.function.Predicate;
+
+          public class MeteoristUtils {
+              public static HitResult getCrosshairTarget(Player player, double range, boolean ignoreWalls, Predicate<Entity> filter) {
+                  Vec3 cameraPos = player.getEyePosition(1.0F);
+                  Vec3 rotation = player.getViewVector(1.0F);
+                  Vec3 endPos = cameraPos.add(rotation.x * range, rotation.y * range, rotation.z * range);
+                  EntityHitResult entityHit = net.minecraft.world.entity.projectile.ProjectileUtil.getEntityHitResult(player, cameraPos, endPos, player.getBoundingBox().inflate(range), filter, 0.3F);
+                  if (entityHit != null) return entityHit;
+                  if (!ignoreWalls) {
+                      return player.level().clip(new ClipContext(cameraPos, endPos, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+                  }
+                  return null;
+              }
+          }
+          EOF
+
+          # 8. ТВОЙ ОРИГИНАЛЬНЫЙ КОД ZKillaura.java (ОДИН В ОДИН)
+          cat << 'EOF' > src/client/java/zgoly/meteorist/modules/ZKillaura.java
+          package zgoly.meteorist.modules;
+
+          import meteordevelopment.meteorclient.events.world.TickEvent;
+          import meteordevelopment.meteorclient.settings.*;
+          import meteordevelopment.meteorclient.systems.friends.Friends;
+          import meteordevelopment.meteorclient.systems.modules.Module;
+          import meteordevelopment.meteorclient.utils.entity.EntityAgeTest;
+          import meteordevelopment.meteorclient.utils.player.FindItemResult;
+          import meteordevelopment.meteorclient.utils.player.InvUtils;
+          import meteordevelopment.orbit.EventHandler;
+          import net.minecraft.tags.ItemTags;
+          import net.minecraft.world.InteractionHand;
+          import net.minecraft.world.entity.AgeableMob;
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.EntityType;
+          import net.minecraft.world.entity.EntityTypes;
+          import net.minecraft.world.entity.LivingEntity;
+          import net.minecraft.world.entity.OwnableEntity;
+          import net.minecraft.world.entity.animal.frog.Frog;
+          import net.minecraft.world.entity.animal.parrot.Parrot;
+          import net.minecraft.world.entity.animal.wolf.Wolf;
+          import net.minecraft.world.entity.monster.Enderman;
+          import net.minecraft.world.entity.monster.Zoglin;
+          import net.minecraft.world.entity.monster.hoglin.Hoglin;
+          import net.minecraft.world.entity.monster.piglin.Piglin;
+          import net.minecraft.world.entity.monster.zombie.Zombie;
+          import net.minecraft.world.entity.monster.zombie.ZombifiedPiglin;
+          import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.item.Item;
+          import net.minecraft.world.item.Items;
+          import net.minecraft.world.phys.EntityHitResult;
+          import net.minecraft.world.phys.HitResult;
+          import zgoly.meteorist.Meteorist;
+          import zgoly.meteorist.utils.MeteoristUtils;
+
+          import java.util.List;
+          import java.util.Objects;
+          import java.util.Set;
+
+          public class ZKillaura extends Module {
+              private final SettingGroup sgFilter = settings.createGroup("Filter");
+              private final SettingGroup sgAttack = settings.createGroup("Attack");
+              private final SettingGroup sgShield = settings.createGroup("Shield");
+              private final SettingGroup sgVisual = settings.createGroup("Visual");
+
+              private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
+                      .name("entities")
+                      .description("Entities to attack.")
+                      .onlyAttackable()
+                      .defaultValue(EntityTypes.PLAYER)
+                      .build()
+              );
+              private final Setting<Double> range = sgFilter.add(new DoubleSetting.Builder()
+                      .name("range")
+                      .description("The maximum range the entity can be to attack it.")
+                      .defaultValue(4.5)
+                      .min(0)
+                      .sliderMax(6)
+                      .build()
+              );
+              private final Setting<EntityAgeTest> passiveMobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>()
+                      .name("passive-mob-age-filter")
+                      .description("Determines the age of passive mobs to target (animals, villagers).")
+                      .defaultValue(EntityAgeTest.Adult)
+                      .build()
+              );
+              private final Setting<EntityAgeTest> hostileMobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>()
+                      .name("hostile-mob-age-filter")
+                      .description("Determines the age of hostile mobs to target (zombies, piglins, hoglins, zoglins).")
+                      .defaultValue(EntityAgeTest.Both)
+                      .build()
+              );
+              private final Setting<Boolean> ignoreNamed = sgFilter.add(new BoolSetting.Builder()
+                      .name("ignore-named")
+                      .description("Whether or not to attack mobs with a name.")
+                      .defaultValue(false)
+                      .build()
+              );
+              private final Setting<Boolean> ignorePassive = sgFilter.add(new BoolSetting.Builder()
+                      .name("ignore-passive")
+                      .description("Will only attack sometimes passive mobs if they are targeting you.")
+                      .defaultValue(true)
+                      .build()
+              );
+              private final Setting<Boolean> ignoreTamed = sgFilter.add(new BoolSetting.Builder()
+                      .name("ignore-tamed")
+                      .description("Will avoid attacking mobs you tamed.")
+                      .defaultValue(false)
+                      .build()
+              );
+              private final Setting<Boolean> ignoreCreative = sgFilter.add(new BoolSetting.Builder()
+                      .name("ignore-creative")
+                      .description("Will avoid attacking players in creative mode.")
+                      .defaultValue(true)
+                      .build()
+              );
+              private final Setting<Boolean> ignoreFriends = sgFilter.add(new BoolSetting.Builder()
+                      .name("ignore-friends")
+                      .description("Will avoid attacking players on your friends list.")
+                      .defaultValue(true)
+                      .build()
+              );
+              private final Setting<Boolean> ignoreWalls = sgFilter.add(new BoolSetting.Builder()
+                      .name("ignore-walls")
+                      .description("Whether or not to attack mobs through walls.")
+                      .defaultValue(false)
+                      .build()
+              );
+              private final Setting<OperationMode> itemFilteringMode = sgFilter.add(new EnumSetting.Builder<OperationMode>()
+                      .name("item-filtering-mode")
+                      .description("Defines how held items control Z Killaura activation.")
+                      .defaultValue(OperationMode.Blacklist)
+                      .build()
+              );
+              private final Setting<List<Item>> itemBlacklist = sgFilter.add(new ItemListSetting.Builder()
+                      .name("item-blacklist")
+                      .description("Z Killaura will NOT activate when holding these items.")
+                      .visible(() -> itemFilteringMode.get() == OperationMode.Blacklist)
+                      .build()
+              );
+              private final Setting<List<Item>> itemWhitelist = sgFilter.add(new ItemListSetting.Builder()
+                      .name("item-whitelist")
+                      .description("Z Killaura only activates when holding one of these items.")
+                      .defaultValue(Items.NETHERITE_SWORD, Items.NETHERITE_AXE, Items.NETHERITE_SPEAR)
+                      .visible(() -> itemFilteringMode.get() == OperationMode.Whitelist)
+                      .build()
+              );
+
+              private final Setting<OnFallMode> onFallMode = sgAttack.add(new EnumSetting.Builder<OnFallMode>()
+                      .name("on-fall-mode")
+                      .description("Chooses an attack strategy when falling to maximize critical damage.")
+                      .defaultValue(OnFallMode.Value)
+                      .build()
+              );
+              private final Setting<Double> onFallValue = sgAttack.add(new DoubleSetting.Builder()
+                      .name("on-fall-value")
+                      .description("Defines a specific value for attacking while falling.")
+                      .min(0)
+                      .defaultValue(0.25)
+                      .sliderMax(1)
+                      .visible(() -> onFallMode.get() == OnFallMode.Value)
+                      .build()
+              );
+              private final Setting<Double> onFallMinRandomValue = sgAttack.add(new DoubleSetting.Builder()
+                      .name("on-fall-min-random-value")
+                      .description("Specifies the minimum randomized value for attacking while falling.")
+                      .min(0)
+                      .defaultValue(0.2)
+                      .sliderMax(1)
+                      .visible(() -> onFallMode.get() == OnFallMode.RandomValue)
+                      .build()
+              );
+              private final Setting<Double> onFallMaxRandomValue = sgAttack.add(new DoubleSetting.Builder()
+                      .name("on-fall-max-random-value")
+                      .description("Specifies the maximum randomized value for attacking while falling.")
+                      .min(0)
+                      .defaultValue(0.4)
+                      .sliderMax(1)
+                      .visible(() -> onFallMode.get() == OnFallMode.RandomValue)
+                      .build()
+              );
+              private final Setting<HitSpeedMode> hitSpeedMode = sgAttack.add(new EnumSetting.Builder<HitSpeedMode>()
+                      .name("hit-speed-mode")
+                      .description("Selects a hit speed mode for attacking.")
+                      .defaultValue(HitSpeedMode.Value)
+                      .build()
+              );
+              private final Setting<Double> hitSpeedValue = sgAttack.add(new DoubleSetting.Builder()
+                      .name("hit-speed-value")
+                      .description("Defines a specific hit speed value for attacking.")
+                      .defaultValue(0)
+                      .sliderRange(-10, 10)
+                      .visible(() -> hitSpeedMode.get() == HitSpeedMode.Value)
+                      .build()
+              );
+              private final Setting<Double> hitSpeedMinRandomValue = sgAttack.add(new DoubleSetting.Builder()
+                      .name("hit-speed-min-random-value")
+                      .description("Specifies the minimum randomized hit speed value.")
+                      .defaultValue(0)
+                      .sliderRange(-10, 10)
+                      .visible(() -> hitSpeedMode.get() == HitSpeedMode.RandomValue)
+                      .build()
+              );
+              private final Setting<Double> hitSpeedMaxRandomValue = sgAttack.add(new DoubleSetting.Builder()
+                      .name("hit-speed-max-random-value")
+                      .description("Specifies the maximum randomized hit speed value.")
+                      .defaultValue(0)
+                      .sliderRange(-10, 10)
+                      .visible(() -> hitSpeedMode.get() == HitSpeedMode.RandomValue)
+                      .build()
+              );
+
+              private final Setting<ShieldMode> shieldMode = sgShield.add(new EnumSetting.Builder<ShieldMode>()
+                      .name("shield-mode")
+                      .description("Will try and use an axe to break target shields.")
+                      .defaultValue(ShieldMode.Break)
+                      .build()
+              );
+              private final Setting<DelayMode> swapDelayMode = sgShield.add(new EnumSetting.Builder<DelayMode>()
+                      .name("swap-delay-mode")
+                      .description("Selects a delay before swapping.")
+                      .defaultValue(DelayMode.Value)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break)
+                      .build()
+              );
+              private final Setting<Integer> swapDelayValue = sgShield.add(new IntSetting.Builder()
+                      .name("swap-delay-value")
+                      .description("Defines a specific delay (in ticks) before swapping.")
+                      .defaultValue(2)
+                      .sliderRange(0, 20)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break && swapDelayMode.get() == DelayMode.Value)
+                      .build()
+              );
+              private final Setting<Integer> swapDelayMinRandomValue = sgShield.add(new IntSetting.Builder()
+                      .name("swap-delay-min-random-value")
+                      .description("Specifies the minimum randomized delay (in ticks) before swapping.")
+                      .defaultValue(1)
+                      .sliderRange(0, 20)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break && swapDelayMode.get() == DelayMode.RandomValue)
+                      .build()
+              );
+              private final Setting<Integer> swapDelayMaxRandomValue = sgShield.add(new IntSetting.Builder()
+                      .name("swap-delay-max-random-value")
+                      .description("Specifies the maximum randomized delay (in ticks) before swapping.")
+                      .defaultValue(5)
+                      .sliderRange(0, 20)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break && swapDelayMode.get() == DelayMode.RandomValue)
+                      .build()
+              );
+              private final Setting<DelayMode> hitDelayMode = sgShield.add(new EnumSetting.Builder<DelayMode>()
+                      .name("hit-delay-mode")
+                      .description("Selects a delay before hitting.")
+                      .defaultValue(DelayMode.Value)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break)
+                      .build()
+              );
+              private final Setting<Integer> hitDelayValue = sgShield.add(new IntSetting.Builder()
+                      .name("hit-delay-value")
+                      .description("Defines a specific delay (in ticks) before hitting.")
+                      .defaultValue(2)
+                      .sliderRange(0, 20)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break && hitDelayMode.get() == DelayMode.Value)
+                      .build()
+              );
+              private final Setting<Integer> hitDelayMinRandomValue = sgShield.add(new IntSetting.Builder()
+                      .name("hit-delay-min-random-value")
+                      .description("Specifies the minimum randomized delay (in ticks) before hitting.")
+                      .defaultValue(1)
+                      .sliderRange(0, 20)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break && hitDelayMode.get() == DelayMode.RandomValue)
+                      .build()
+              );
+              private final Setting<Integer> hitDelayMaxRandomValue = sgShield.add(new IntSetting.Builder()
+                      .name("hit-delay-max-random-value")
+                      .description("Specifies the maximum randomized delay (in ticks) before hitting.")
+                      .defaultValue(5)
+                      .sliderRange(0, 20)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break && hitDelayMode.get() == DelayMode.RandomValue)
+                      .build()
+              );
+              private final Setting<DelayMode> swapBackDelayMode = sgShield.add(new EnumSetting.Builder<DelayMode>()
+                      .name("swap-back-delay-mode")
+                      .description("Selects a delay before swapping back.")
+                      .defaultValue(DelayMode.Value)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break)
+                      .build()
+              );
+              private final Setting<Integer> swapBackDelayValue = sgShield.add(new IntSetting.Builder()
+                      .name("swap-back-delay-value")
+                      .description("Defines a specific delay (in ticks) before swapping back.")
+                      .defaultValue(2)
+                      .sliderRange(0, 20)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break && swapBackDelayMode.get() == DelayMode.Value)
+                      .build()
+              );
+              private final Setting<Integer> swapBackDelayMinRandomValue = sgShield.add(new IntSetting.Builder()
+                      .name("swap-back-delay-min-random-value")
+                      .description("Specifies the minimum randomized delay (in ticks) before swapping back.")
+                      .defaultValue(1)
+                      .sliderRange(0, 20)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break && swapBackDelayMode.get() == DelayMode.RandomValue)
+                      .build()
+              );
+              private final Setting<Integer> swapBackDelayMaxRandomValue = sgShield.add(new IntSetting.Builder()
+                      .name("swap-back-delay-max-random-value")
+                      .description("Specifies the maximum randomized delay (in ticks) before swapping back.")
+                      .defaultValue(5)
+                      .sliderRange(0, 20)
+                      .visible(() -> shieldMode.get() == ShieldMode.Break && swapBackDelayMode.get() == DelayMode.RandomValue)
+                      .build()
+              );
+
+              private final Setting<Boolean> swingHand = sgVisual.add(new BoolSetting.Builder()
+                      .name("swing-hand")
+                      .description("Makes hand swing visible client-side.")
+                      .defaultValue(true)
+                      .build()
+              );
+
+              float randomOnFallFloat = 0;
+              float randomHitSpeedFloat = 0;
+
+              private ShieldState shieldState = ShieldState.Idle;
+              private int swapTimer = 0, hitTimer = 0, swapBackTimer = 0;
+              private int originalSlot = -1;
 
               @Override
-              protected void init() {
-                  int x = width / 2 - 110;
-                  int y = height / 2 - 100;
+              public void onActivate() {
+                  randomOnFallFloat = 0;
+                  randomHitSpeedFloat = 0;
 
-                  this.addRenderableWidget(Button.builder(Component.literal("TriggerBot: " + (MainClient.enabled ? "§aON" : "§cOFF")), b -> {
-                      MainClient.enabled = !MainClient.enabled;
-                      b.setMessage(Component.literal("TriggerBot: " + (MainClient.enabled ? "§aON" : "§cOFF")));
-                  }).bounds(x, y, 220, 20).build());
-
-                  this.addRenderableWidget(Button.builder(Component.literal("OnFall Mode: " + getModeName(MainClient.onFallMode)), b -> {
-                      MainClient.onFallMode = (MainClient.onFallMode + 1) % 3;
-                      b.setMessage(Component.literal("OnFall Mode: " + getModeName(MainClient.onFallMode)));
-                  }).bounds(x, y + 25, 220, 20).build());
-
-                  this.addRenderableWidget(Button.builder(Component.literal("HitSpeed Mode: " + getModeName(MainClient.hitSpeedMode)), b -> {
-                      MainClient.hitSpeedMode = (MainClient.hitSpeedMode + 1) % 3;
-                      b.setMessage(Component.literal("HitSpeed Mode: " + getModeName(MainClient.hitSpeedMode)));
-                  }).bounds(x, y + 50, 220, 20).build());
-
-                  this.addRenderableWidget(Button.builder(Component.literal("Shield Mode: " + getShieldName(MainClient.shieldMode)), b -> {
-                      MainClient.shieldMode = (MainClient.shieldMode + 1) % 3;
-                      b.setMessage(Component.literal("Shield Mode: " + getShieldName(MainClient.shieldMode)));
-                  }).bounds(x, y + 75, 220, 20).build());
-                  
-                  this.addRenderableWidget(Button.builder(Component.literal("Range: " + MainClient.range), b -> {
-                      MainClient.range += 0.5;
-                      if (MainClient.range > 6.0) MainClient.range = 3.0;
-                      b.setMessage(Component.literal("Range: " + MainClient.range));
-                  }).bounds(x, y + 100, 220, 20).build());
-
-                  this.addRenderableWidget(Button.builder(Component.literal("Ignore Creative: " + (MainClient.ignoreCreative ? "§aON" : "§cOFF")), b -> {
-                      MainClient.ignoreCreative = !MainClient.ignoreCreative;
-                      b.setMessage(Component.literal("Ignore Creative: " + (MainClient.ignoreCreative ? "§aON" : "§cOFF")));
-                  }).bounds(x, y + 125, 220, 20).build());
+                  shieldState = ShieldState.Idle;
+                  swapTimer = hitTimer = swapBackTimer = 0;
+                  originalSlot = -1;
               }
 
-              private String getModeName(int mode) {
-                  if (mode == 0) return "§cNone";
-                  if (mode == 1) return "§aValue";
-                  return "§eRandom";
-              }
-              
-              private String getShieldName(int mode) {
-                  if (mode == 0) return "§cIgnore";
-                  if (mode == 1) return "§aBreak";
-                  return "§eNone";
+              public ZKillaura() {
+                  super(Meteorist.CATEGORY, "z-kill-aura", "Killaura which only attacks target if you aim at it.");
               }
 
-              @Override
-              public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
-                  this.renderBackground(context, mouseX, mouseY, delta);
-                  context.drawCenteredString(this.font, "§l§bTrigger Bot", this.width / 2, this.height / 2 - 120, 0xFFFFFF);
-                  super.render(context, mouseX, mouseY, delta);
+              @EventHandler
+              private void onTick(TickEvent.Pre event) {
+                  if (mc.player.isDeadOrDying() || mc.level == null) return;
+
+                  Item held = mc.player.getMainHandItem().getItem();
+                  if (!(itemFilteringMode.get() == OperationMode.Whitelist
+                          ? itemWhitelist.get().contains(held)
+                          : !itemBlacklist.get().contains(held))) return;
+
+                  HitResult hitResult = MeteoristUtils.getCrosshairTarget(mc.player, range.get(), ignoreWalls.get(), this::entityCheck);
+                  if (hitResult == null || hitResult.getType() != HitResult.Type.ENTITY) return;
+
+                  Entity entity = ((EntityHitResult) hitResult).getEntity();
+                  LivingEntity livingEntity = entity instanceof LivingEntity ? (LivingEntity) entity : null;
+
+                  // Using labeled breaks instead of returns so the code can run in one tick, but I think there should be a simpler way to do this
+                  if (shieldMode.get() == ShieldMode.Break && livingEntity != null) {
+                      if (shieldState == ShieldState.Idle && livingEntity.isBlocking()) {
+                          FindItemResult axe = InvUtils.findInHotbar(stack -> stack.is(ItemTags.AXES));
+                          if (axe.found()) {
+                              shieldState = ShieldState.SwapAxe;
+                              swapTimer = calculateDelay(swapDelayMode.get(), swapDelayValue.get(),
+                                      swapDelayMinRandomValue.get(), swapDelayMaxRandomValue.get());
+                          }
+                      }
+
+                      swapAxeState:
+                      if (shieldState == ShieldState.SwapAxe) {
+                          if (swapTimer-- > 0) break swapAxeState;
+
+                          FindItemResult axe = InvUtils.findInHotbar(stack -> stack.is(ItemTags.AXES));
+                          if (axe.found() && livingEntity.isBlocking()) {
+                              originalSlot = mc.player.getInventory().getSelectedSlot();
+                              InvUtils.swap(axe.slot(), false);
+
+                              shieldState = ShieldState.Attack;
+                              hitTimer = calculateDelay(hitDelayMode.get(), hitDelayValue.get(),
+                                      hitDelayMinRandomValue.get(), hitDelayMaxRandomValue.get());
+                          } else {
+                              resetShield();
+                          }
+                      }
+
+                      attackState:
+                      if (shieldState == ShieldState.Attack) {
+                          if (hitTimer-- > 0) break attackState;
+
+                          if (livingEntity.isBlocking()) {
+                              mc.gameMode.attack(mc.player, livingEntity);
+                              if (swingHand.get()) mc.player.swing(InteractionHand.MAIN_HAND, mc.player.getMainHandItem().getAttackAnimation(), false);
+
+                              shieldState = ShieldState.SwapBack;
+                              swapBackTimer = calculateDelay(swapBackDelayMode.get(), swapBackDelayValue.get(),
+                                      swapBackDelayMinRandomValue.get(), swapBackDelayMaxRandomValue.get());
+                          } else {
+                              InvUtils.swap(originalSlot, false);
+                              resetShield();
+                          }
+                      }
+
+                      swapBackState:
+                      if (shieldState == ShieldState.SwapBack) {
+                          if (swapBackTimer-- > 0) break swapBackState;
+
+                          if (originalSlot != mc.player.getInventory().getSelectedSlot()) {
+                              InvUtils.swap(originalSlot, false);
+                          }
+
+                          resetShield();
+                      }
+
+                      if (shieldState == ShieldState.Attack || shieldState == ShieldState.SwapBack) return;
+                  }
+
+                  OnFallMode currOnFallMode = onFallMode.get();
+                  if (currOnFallMode != OnFallMode.None) {
+                      float onFall = currOnFallMode == OnFallMode.Value ? onFallValue.get().floatValue() : randomOnFallFloat;
+                      if (!(mc.player.fallDistance > onFall)) return;
+                  }
+
+                  HitSpeedMode currHitSpeedMode = hitSpeedMode.get();
+                  float hitSpeed = currHitSpeedMode == HitSpeedMode.Value ? hitSpeedValue.get().floatValue() : randomHitSpeedFloat;
+                  if (currHitSpeedMode != HitSpeedMode.None && (mc.player.getAttackStrengthScale(hitSpeed) * 17.0F) < 16)
+                      return;
+
+                  mc.gameMode.attack(mc.player, entity);
+                  if (swingHand.get()) mc.player.swing(InteractionHand.MAIN_HAND, mc.player.getMainHandItem().getAttackAnimation(), false);
+
+                  if (currOnFallMode == OnFallMode.RandomValue) {
+                      float min = Math.min(onFallMinRandomValue.get().floatValue(), onFallMaxRandomValue.get().floatValue());
+                      float max = Math.max(onFallMinRandomValue.get().floatValue(), onFallMaxRandomValue.get().floatValue());
+                      randomOnFallFloat = min + mc.level.getRandom().nextFloat() * (max - min);
+                  }
+
+                  if (currHitSpeedMode == HitSpeedMode.RandomValue) {
+                      float min = Math.min(hitSpeedMinRandomValue.get().floatValue(), hitSpeedMaxRandomValue.get().floatValue());
+                      float max = Math.max(hitSpeedMinRandomValue.get().floatValue(), hitSpeedMaxRandomValue.get().floatValue());
+                      randomHitSpeedFloat = min + mc.level.getRandom().nextFloat() * (max - min);
+                  }
               }
-              
-              @Override
-              public boolean isPauseScreen() { return false; }
+
+              private void resetShield() {
+                  shieldState = ShieldState.Idle;
+                  swapTimer = hitTimer = swapBackTimer = 0;
+                  originalSlot = -1;
+              }
+
+              private int calculateDelay(DelayMode mode, int value, int minRandom, int maxRandom) {
+                  return switch (mode) {
+                      case Value -> value;
+                      case RandomValue -> minRandom + mc.level.getRandom().nextInt(maxRandom - minRandom + 1);
+                  };
+              }
+
+              private boolean entityCheck(Entity entity) {
+                  if (entity == mc.player || entity == mc.getCameraEntity()) return false;
+                  if (!entity.isAlive()) return false;
+                  if (entity instanceof LivingEntity livingEntity && livingEntity.isDeadOrDying()) return false;
+                  if (!entities.get().contains(entity.getType())) return false;
+                  if (ignoreNamed.get() && entity.hasCustomName()) return false;
+
+                  if (ignoreTamed.get()
+                          && entity instanceof OwnableEntity ownable
+                          && Objects.equals(ownable.getOwner(), mc.player)) {
+                      return false;
+                  }
+
+                  if (ignorePassive.get() && isPassive(entity)) return false;
+
+                  if (entity instanceof Player player) {
+                      if (ignoreCreative.get() && player.isCreative()) return false;
+                      if (ignoreFriends.get() && !Friends.get().shouldAttack(player)) return false;
+                      if (shieldMode.get() == ShieldMode.Ignore && player.isBlocking()) return false;
+                  }
+
+                  if (entity instanceof LivingEntity livingEntity) {
+                      // Hostile mobs with baby variants (zombies, piglins, hoglins, zoglins)
+                      if (entity instanceof Zombie || entity instanceof Piglin
+                              || entity instanceof Hoglin || entity instanceof Zoglin) {
+                          return hostileMobAgeFilter.get().test(livingEntity);
+                      }
+                      // Passive mobs with baby variants (animals, villagers)
+                      if (entity instanceof AgeableMob && (!(entity instanceof Frog || entity instanceof Parrot))) {
+                          return passiveMobAgeFilter.get().test(livingEntity);
+                      }
+                  }
+
+                  return true;
+              }
+
+              private boolean isPassive(Entity entity) {
+                  return switch (entity) {
+                      case Enderman enderman -> !enderman.isCreepy();
+                      case ZombifiedPiglin piglin -> !piglin.isAggressive();
+                      case Wolf wolf -> !wolf.isAggressive();
+                      default -> false;
+                  };
+              }
+
+              public enum OnFallMode {
+                  None,
+                  Value,
+                  RandomValue
+              }
+
+              public enum HitSpeedMode {
+                  None,
+                  Value,
+                  RandomValue
+              }
+
+              public enum ShieldMode {
+                  Ignore,
+                  Break,
+                  None
+              }
+
+              public enum DelayMode {
+                  Value,
+                  RandomValue
+              }
+
+              private enum ShieldState {
+                  Idle,
+                  SwapAxe,
+                  Attack,
+                  SwapBack
+              }
+
+              public enum OperationMode {
+                  Whitelist,
+                  Blacklist
+              }
           }
           EOF
 
