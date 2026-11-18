@@ -23,8 +23,12 @@ jobs:
             sed -i 's/"entrypoints": {/"accessWidener": "template-mod.accesswidener",\n  "entrypoints": {/g' src/main/resources/fabric.mod.json
           fi
           
+          # ИСПРАВЛЕНИЕ: Блок loom теперь добавляется в КОНЕЦ build.gradle
           if ! grep -q "accessWidenerPath" build.gradle; then
-            sed -i '1s/^/loom { accessWidenerPath = file("src\/main\/resources\/template-mod.accesswidener") }\n/' build.gradle
+            echo "" >> build.gradle
+            echo "loom {" >> build.gradle
+            echo "    accessWidenerPath = file(\"src/main/resources/template-mod.accesswidener\")" >> build.gradle
+            echo "}" >> build.gradle
           fi
 
           # Миксины
@@ -101,36 +105,31 @@ jobs:
           public class ConnectionMixin {
               private static final List<Packet<?>> buffer = new ArrayList<>();
               private static int packetCount = 0;
-              // Флаг для предотвращения рекурсии при отправке накопленного
               private static boolean flushing = false; 
 
               @Inject(method = "send(Lnet/minecraft/network/protocol/Packet;)V", at = @At("HEAD"), cancellable = true)
               private void onSend(Packet<?> packet, CallbackInfo ci) {
-                  // Если мы сейчас сами сбрасываем пакеты - пропускаем их без перехвата
                   if (flushing) return;
 
-                  // Режимы 0 и 1 (Blink)
                   if (GrimConfig.INSTANCE.enabled && (GrimConfig.INSTANCE.mode == 0 || GrimConfig.INSTANCE.mode == 1)) {
                       if (packet instanceof ServerboundMovePlayerPacket) {
                           buffer.add(packet);
                           packetCount++;
                           
-                          // Лимит буфера: 3 тика (150мс) или 6 тиков (300мс)
                           int limit = GrimConfig.INSTANCE.mode == 0 ? 3 : 6;
                           
                           if (packetCount >= limit) {
-                              flushing = true; // Включаем защиту
+                              flushing = true;
                               for (Packet<?> p : buffer) {
                                   ((Connection)(Object)this).send(p);
                               }
-                              flushing = false; // Выключаем защиту
+                              flushing = false;
                               buffer.clear();
                               packetCount = 0;
                           }
-                          ci.cancel(); // Отменяем одиночную отправку
+                          ci.cancel();
                       }
                   } else if (!buffer.isEmpty()) {
-                      // Если Blink выключили, сбрасываем остатки
                       flushing = true;
                       for (Packet<?> p : buffer) ((Connection)(Object)this).send(p);
                       flushing = false;
@@ -157,7 +156,6 @@ jobs:
               @Inject(method = "aiStep", at = @At("HEAD"))
               private void onAiStep(CallbackInfo ci) {
                   if (GrimConfig.INSTANCE.enabled && (GrimConfig.INSTANCE.mode == 2 || GrimConfig.INSTANCE.mode == 3)) {
-                      // Обнуляем задержку прыжка (работает только с Access Widener)
                       ((LivingEntity)(Object)this).noJumpDelay = 0;
                   }
               }
@@ -188,7 +186,6 @@ jobs:
                       long win = client.getWindow().getWindow();
                       tickTimer++;
 
-                      // Right Ctrl - Меню
                       boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
                           if (client.screen instanceof GrimScreen) client.setScreen(null);
@@ -196,7 +193,6 @@ jobs:
                       }
                       rCtrlWasDown = rCtrl;
 
-                      // X - Вкл/Выкл
                       boolean xDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_X);
                       if (xDown && !xKeyWasDown && client.screen == null) {
                           GrimConfig.INSTANCE.enabled = !GrimConfig.INSTANCE.enabled;
@@ -207,18 +203,13 @@ jobs:
 
                       if (!GrimConfig.INSTANCE.enabled || client.screen != null) return;
 
-                      // Логика Head-Hitting (Режим 2)
                       if (GrimConfig.INSTANCE.mode == 2) {
-                          // Проверка: над головой на 2 блока вверх есть блок, и мы на земле
                           if (client.level.getBlockState(client.player.blockPosition().above(2)).isSolid() && client.player.onGround()) {
-                              // Так как noJumpDelay = 0, мы можем прыгать каждый тик
                               client.player.jumpFromGround();
                           }
                       } 
-                      // Spider (Режим 3)
                       else if (GrimConfig.INSTANCE.mode == 3) {
                           if (client.player.horizontalCollision && client.player.onGround()) {
-                              // Если прижались к стене и жмем пробел, прыгаем каждый тик
                               if (client.options.keyJump.isDown()) {
                                   client.player.jumpFromGround();
                               }
