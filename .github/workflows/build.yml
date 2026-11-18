@@ -77,7 +77,7 @@ jobs:
           mkdir -p src/main/resources
 
           cp BotConfig.java PriceParser.java MarketScanner.java AuctionSniper.java BotConfigScreen.java AuctionBotClient.java src/main/java/com/auctionbot/
-          cp ClientPlayNetworkHandlerMixin.java src/main/java/com/auctionbot/mixin/
+          cp ClientPlayNetworkHandlerMixin.java HandledScreenMixin.java src/main/java/com/auctionbot/mixin/
 
           cat << 'EOF' > src/main/resources/auctionbot.mixins.json
           {
@@ -86,7 +86,8 @@ jobs:
             "package": "com.auctionbot.mixin",
             "compatibilityLevel": "JAVA_21",
             "client": [
-              "ClientPlayNetworkHandlerMixin"
+              "ClientPlayNetworkHandlerMixin",
+              "HandledScreenMixin"
             ],
             "injectors": {
               "defaultRequire": 1
