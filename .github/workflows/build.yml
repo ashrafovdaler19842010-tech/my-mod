@@ -24,13 +24,53 @@ jobs:
 
       - name: Configure Project & Copy Sources
         run: |
-          sed -i 's/^minecraft_version=.*/minecraft_version=1.21.8/' gradle.properties
-          sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
-          sed -i 's/^yarn_mappings=.*/yarn_mappings=1.21.8+build.1/' gradle.properties
-          sed -i 's/^fabric_version=.*/fabric_version=0.129.0+1.21.8/' gradle.properties
-          sed -i 's/loom.officialMojangMappings()/"net.fabricmc:yarn:1.21.8+build.1:v2"/g' build.gradle || true
-          sed -i 's/loom.officialMojangMappings()/"net.fabricmc:yarn:1.21.8+build.1:v2"/g' build.gradle.kts || true
+          cat << 'EOF' > build.gradle
+          plugins {
+              id 'fabric-loom' version '1.11-SNAPSHOT'
+              id 'maven-publish'
+          }
 
+          version = "1.0.0"
+          group = "com.auctionbot"
+
+          base {
+              archivesName = "auctionbot"
+          }
+
+          repositories {
+              mavenCentral()
+          }
+
+          dependencies {
+              minecraft "com.mojang:minecraft:1.21.8"
+              mappings "net.fabricmc:yarn:1.21.8+build.1:v2"
+              modImplementation "net.fabricmc:fabric-loader:0.16.14"
+              modImplementation "net.fabricmc.fabric-api:fabric-api:0.129.0+1.21.8"
+          }
+
+          processResources {
+              inputs.property "version", project.version
+              filesMatching("fabric.mod.json") {
+                  expand "version": project.version
+              }
+          }
+
+          tasks.withType(JavaCompile).configureEach {
+              it.options.release = 21
+          }
+
+          java {
+              withSourcesJar()
+              sourceCompatibility = JavaVersion.VERSION_21
+              targetCompatibility = JavaVersion.VERSION_21
+          }
+
+          jar {
+              from("LICENSE") {
+                  rename { "${it}_${project.base.archivesName.get()}"}
+              }
+          }
+          EOF
 
           rm -rf src/main/java/*
           mkdir -p src/main/java/com/auctionbot/mixin
@@ -82,9 +122,7 @@ jobs:
           EOF
 
       - name: Build with Gradle
-        run: |
-          chmod +x gradlew
-          gradle build --no-daemon
+        run: gradle build --no-daemon
 
       - name: Upload Jar
         uses: actions/upload-artifact@v4
