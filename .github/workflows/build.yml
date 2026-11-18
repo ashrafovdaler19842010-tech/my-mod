@@ -12,14 +12,11 @@ jobs:
       
       - name: Configure Project
         run: |
-          # 1. НАСТРОЙКА ВЕРСИЙ
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21/' gradle.properties
 
-          # 2. ПОЛНАЯ ОЧИСТКА ПАПКИ SRC ОТ ШАБЛОНОВ
           rm -rf src
 
-          # 3. СОЗДАЕМ ПРАВИЛЬНЫЙ fabric.mod.json
           mkdir -p src/main/resources
           cat << 'EOF' > src/main/resources/fabric.mod.json
           {
@@ -46,7 +43,6 @@ jobs:
           }
           EOF
 
-          # 4. СОЗДАЕМ ПАПКИ ДЛЯ JAVA И ГЕНЕРИРУЕМ КОД
           mkdir -p src/client/java/com/example/client
 
           # --- ГЕНЕРАЦИЯ MainClient.java ---
@@ -199,9 +195,22 @@ jobs:
                                   matrices.scale(-0.025F, -0.025F, 0.025F);
                                   
                                   float realHp = getRealHealth(living);
-                                  String text = String.format("§c%.1f ❤", realHp);
                                   
-                                  Minecraft.getInstance().font.drawInBatch(text, -Minecraft.getInstance().font.width(text) / 2.0f, 0, 0xFFFFFF, false, matrices.last().pose(), context.consumers(), false, 0, 0xFFFFFFFF);
+                                  // ИСПРАВЛЕНО: Используем Component и Font.DisplayMode
+                                  net.minecraft.network.chat.Component textComp = net.minecraft.network.chat.Component.literal(String.format("§c%.1f ❤", realHp));
+                                  
+                                  Minecraft.getInstance().font.drawInBatch(
+                                      textComp, 
+                                      -Minecraft.getInstance().font.width(textComp) / 2.0f, 
+                                      0, 
+                                      0xFFFFFF, 
+                                      false, 
+                                      matrices.last().pose(), 
+                                      context.consumers(), 
+                                      net.minecraft.client.gui.Font.DisplayMode.SEE_THROUGH, 
+                                      0, 
+                                      0xFFFFFFFF
+                                  );
                                   matrices.popPose();
                               }
                           }
@@ -213,7 +222,8 @@ jobs:
                   var scoreboard = living.level().getScoreboard();
                   var objective = scoreboard.getObjective("health");
                   if (objective != null) {
-                      var score = scoreboard.getOrCreatePlayerScore(living.getScoreboardName(), objective);
+                      // ИСПРАВЛЕНО: Передаем сам объект living, а не его имя
+                      var score = scoreboard.getOrCreatePlayerScore(living, objective);
                       if (score != null) {
                           return score.getScore();
                       }
@@ -295,7 +305,6 @@ jobs:
           }
           EOF
 
-          # 5. НАСТРАИВАЕМ BUILD.GRADLE
           if ! grep -q "duplicatesStrategy" build.gradle; then
             echo "" >> build.gradle
             echo "tasks.named('jar') {" >> build.gradle
