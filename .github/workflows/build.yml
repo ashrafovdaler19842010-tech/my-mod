@@ -12,6 +12,7 @@ jobs:
       
       - name: Configure Project
         run: |
+          # СБРОС ВЕРСИЙ ПОД 1.21.8
           sed -i 's/^fabric_loader_version=.*/fabric_loader_version=0.16.9/' gradle.properties
           sed -i 's/^minecraft_version=.*/minecraft_version=1.21.8/' gradle.properties
 
@@ -63,25 +64,27 @@ jobs:
           import net.minecraft.world.phys.Vec3;
           import org.lwjgl.glfw.GLFW;
 
+          import java.util.Random;
+
           public class MainClient implements ClientModInitializer {
               public static boolean killAuraEnabled = false;
               public static boolean autoSprint = true;
               public static boolean moveCorrection = true;
               public static double range = 3.0;
-              public static float fov = 180.0f; // Ограничение угла обзора
-              public static int sprintResetDelay = 1; // Задержка сброса спринта (в тиках)
+              public static float fov = 180.0f; 
+              public static int sprintResetDelay = 2; 
 
               private static boolean xKeyWasDown = false;
               private static boolean rCtrlWasDown = false;
 
-              // Переменные ротации
-              private static float lastYaw = 0;
-              private static float lastPitch = 0;
+              // Переменные ротации (Saccadic Engine)
               private static float currentYaw = 0;
               private static float currentPitch = 0;
+              private static float lastYawDiff = 0;
+              private static float lastPitchDiff = 0;
               
-              // Стейт-машина для спринт-ресета
-              private static int sprintResetState = 0; // 0 - ждем, 1 - сбросили, 2 - бьем
+              private static final Random random = new Random();
+              private static int sprintResetState = 0; 
               private static int sprintTimer = 0;
               private static int attackCooldown = 0;
 
@@ -91,7 +94,7 @@ jobs:
                       if (client.player == null || client.getWindow() == null || client.level == null) return;
                       long win = client.getWindow().getWindow();
 
-                      // Меню
+                      // Меню (Right Ctrl)
                       boolean rCtrl = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_RIGHT_CONTROL);
                       if (rCtrl && !rCtrlWasDown) {
                           if (client.screen instanceof GuiScreen) client.setScreen(null);
@@ -99,7 +102,7 @@ jobs:
                       }
                       rCtrlWasDown = rCtrl;
 
-                      // Вкл/Выкл
+                      // Вкл/Выкл (X)
                       boolean xDown = InputConstants.isKeyDown(win, GLFW.GLFW_KEY_X);
                       if (xDown && !xKeyWasDown && client.screen == null) {
                           killAuraEnabled = !killAuraEnabled;
@@ -111,8 +114,8 @@ jobs:
                       }
                       xKeyWasDown = xDown;
 
-                      // АВТО-СПРИНТ (Если зажат W и L-Ctrl)
-                      if (autoSprint && client.options.keyUp.isDown() && client.options.keyLeftControl.isDown()) {
+                      // АВТО-СПРИНТ (Если зажат W и keySprint)
+                      if (autoSprint && client.options.keyUp.isDown() && client.options.keySprint.isDown()) {
                           client.player.setSprinting(true);
                       }
 
@@ -156,19 +159,26 @@ jobs:
                           float yawDiff = Math.abs(Mth.wrapDegrees(targetYaw - client.player.getYRot()));
                           if (yawDiff > fov / 2.0f) return; // Не смотрим - не бьем
 
-                          // 4. ПЛАВНАЯ РОТАЦИЯ (Античит-байпас)
+                          // 4. ПЛАВНАЯ РОТАЦИЯ (SACCADIC ENGINE - BYPASS GRIM/POLAR)
                           float deltaYaw = Mth.wrapDegrees(targetYaw - currentYaw);
                           float deltaPitch = targetPitch - currentPitch;
 
-                          // Ограничиваем скорость поворота (30 градусов за тик макс)
-                          float maxStep = 30.0f;
+                          // Ограничение скорости поворота
+                          float maxStep = 22.0f; 
                           float yawStep = Mth.clamp(deltaYaw, -maxStep, maxStep);
                           float pitchStep = Mth.clamp(deltaPitch, -maxStep, maxStep);
 
-                          // GCD (Шаги мыши, как у реального игрока)
+                          // ПРИМЕНЯЕМ GCD СТРОГО К ШАГУ (А не к итоговому вектору)
                           float gcd = getGCD();
                           yawStep -= yawStep % gcd;
                           pitchStep -= pitchStep % gcd;
+
+                          // Биомиметический джиттер (Saccade jitter)
+                          if (Math.abs(yawStep) > 0.5f || Math.abs(pitchStep) > 0.5f) {
+                              // Микро-тремор камеры (0.01 - 0.08 градуса)
+                              yawStep += (float) ((random.nextFloat() - 0.5) * 0.15f);
+                              pitchStep += (float) ((random.nextFloat() - 0.5) * 0.1f);
+                          }
 
                           currentYaw += yawStep;
                           currentPitch += pitchStep;
@@ -177,12 +187,11 @@ jobs:
                           client.player.setYRot(currentYaw);
                           client.player.setXRot(currentPitch);
 
-                          // 5. ЛОГИКА СПРИНТ-РЕСЕТА И УДАРА
+                          // 5. ЛОГИКА W-TAP (SPRINT RESET) И УДАРА
                           if (attackCooldown > 0) {
                               attackCooldown--;
                           } else {
                               if (sprintResetState == 0) {
-                                  // Начинаем сброс спринта
                                   client.player.setSprinting(false);
                                   sprintResetState = 1;
                                   sprintTimer = sprintResetDelay;
@@ -190,32 +199,29 @@ jobs:
                                   if (sprintTimer > 0) {
                                       sprintTimer--;
                                   } else {
-                                      // Бьем!
+                                      // Бьем! (Только криты, если падаем)
                                       if (client.player.getAttackStrengthScale(0.5F) >= 1.0F && (!client.player.onGround() && client.player.fallDistance > 0.0F)) {
                                           client.gameMode.attack(client.player, target);
                                           client.player.swing(InteractionHand.MAIN_HAND);
-                                          client.player.resetAttackStrengthTicker(); // Быстрый крит
-                                          attackCooldown = 2; // Кулдаун между ударами
+                                          client.player.resetAttackStrengthTicker();
+                                          attackCooldown = 2; 
                                       }
                                       sprintResetState = 2;
                                   }
                               } else if (sprintResetState == 2) {
-                                  // Возвращаем спринт
-                                  if (autoSprint && client.options.keyUp.isDown()) {
-                                      client.player.setSprinting(true);
-                                  }
+                                  if (autoSprint && client.options.keyUp.isDown()) client.player.setSprinting(true);
                                   sprintResetState = 0;
                               }
                           }
                       } else {
-                          sprintResetState = 0; // Сброс, если нет цели
-                          if (autoSprint && client.options.keyUp.isDown() && client.options.keyLeftControl.isDown()) {
+                          sprintResetState = 0;
+                          if (autoSprint && client.options.keyUp.isDown() && client.options.keySprint.isDown()) {
                               client.player.setSprinting(true);
                           }
                       }
                   });
 
-                  // Рендер ХП (Оставляем как было)
+                  // Рендер ХП
                   WorldRenderEvents.AFTER_ENTITIES.register(context -> {
                       if (!killAuraEnabled) return;
                       var matrices = context.matrixStack();
