@@ -17,14 +17,14 @@ public class BotConfig {
 
     public static BotConfig INSTANCE = new BotConfig();
 
-    public int buyPercent = 90;
+    public int buyPercent = 80;
     public SpeedMode speedMode = SpeedMode.FAST;
     public Map<String, ItemData> items = new LinkedHashMap<>();
 
     public enum SpeedMode {
-        ULTRA("Ультра быстрый", 150, 100, 350),
-        FAST("Быстрый", 300, 200, 500),
-        MEDIUM("Средний", 600, 400, 800);
+        ULTRA("Ультра быстрый", 180, 120, 450),
+        FAST("Быстрый", 300, 220, 650),
+        MEDIUM("Средний", 600, 400, 950);
 
         public final String displayName;
         public final long chatDelayMs;
@@ -46,11 +46,13 @@ public class BotConfig {
 
     public static class ItemData {
         public String displayName;
+        public String itemId; // ID предмета для иконки (например, "minecraft:diamond_chestplate")
         public double unitPrice;
         public boolean enabled;
 
-        public ItemData(String displayName, double unitPrice, boolean enabled) {
+        public ItemData(String displayName, String itemId, double unitPrice, boolean enabled) {
             this.displayName = displayName;
+            this.itemId = itemId;
             this.unitPrice = unitPrice;
             this.enabled = enabled;
         }
@@ -64,7 +66,7 @@ public class BotConfig {
                     INSTANCE = loaded;
                     if (INSTANCE.items == null) INSTANCE.items = new LinkedHashMap<>();
                     if (INSTANCE.speedMode == null) INSTANCE.speedMode = SpeedMode.FAST;
-                    if (INSTANCE.buyPercent < 1 || INSTANCE.buyPercent > 100) INSTANCE.buyPercent = 90;
+                    if (INSTANCE.buyPercent < 1 || INSTANCE.buyPercent > 100) INSTANCE.buyPercent = 80;
                 }
             } catch (Exception e) {
                 e.printStackTrace();
@@ -82,14 +84,17 @@ public class BotConfig {
         }
     }
 
-    public void updateItemPrice(String rawName, double newUnitPrice) {
+    public void updateItemPrice(String rawName, String itemId, double newUnitPrice) {
         String key = rawName.trim().toLowerCase();
         ItemData existing = items.get(key);
         if (existing == null) {
-            items.put(key, new ItemData(rawName.trim(), newUnitPrice, true));
+            items.put(key, new ItemData(rawName.trim(), itemId, newUnitPrice, true));
         } else {
             existing.unitPrice = newUnitPrice;
             existing.displayName = rawName.trim();
+            if (itemId != null && !itemId.isEmpty()) {
+                existing.itemId = itemId;
+            }
         }
     }
 }
