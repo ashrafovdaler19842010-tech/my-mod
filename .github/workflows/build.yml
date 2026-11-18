@@ -31,6 +31,15 @@ jobs:
             echo "}" >> build.gradle
           fi
 
+          # ДОБАВЛЕНО: Стратегия для дубликатов в sourcesJar
+          if ! grep -q "duplicatesStrategy" build.gradle; then
+            echo "" >> build.gradle
+            echo "// Исправление ошибки дублирования в sourcesJar" >> build.gradle
+            echo "tasks.named('sourcesJar') {" >> build.gradle
+            echo "    duplicatesStrategy = DuplicatesStrategy.EXCLUDE" >> build.gradle
+            echo "}" >> build.gradle
+          fi
+
           # Миксины
           cat << 'EOF' > src/client/resources/template-mod.mixins.json
           {
