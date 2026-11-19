@@ -34,16 +34,16 @@ public class AimbotModule {
     // --- Человекоподобность и FunTime ---
     public BoolSetting randomPoint = new BoolSetting("Random Point", "Случайная точка в хитбоксе", true);
     public DoubleSetting saccade = new DoubleSetting("Saccade", "Микро-движения глаз", 0.0, 0.0, 2.0);
+    public DoubleSetting humanization = new DoubleSetting("Humanization", "Задержка реакции (0-1)", 0.0, 0.0, 1.0);
     public DoubleSetting gcd = new DoubleSetting("Rotation GCD", "Шаг мыши (обход Grim)", 0.0, 0.0, 5.0);
     public DoubleSetting jitter = new DoubleSetting("Jitter", "Случайное дрожание", 0.0, 0.0, 5.0);
     public DoubleSetting randomSpeedMin = new DoubleSetting("Rand Speed Min", "Мин. рандом скорость", 0.8, 0.1, 3.0);
     public DoubleSetting randomSpeedMax = new DoubleSetting("Rand Speed Max", "Макс. рандом скорость", 1.2, 0.1, 3.0);
 
     // --- Настройки HUD ---
-    public DoubleSetting hudX = new DoubleSetting("HUD X", "Позиция HUD по горизонтали (от левого края)", 50.0, 0.0, 1920.0);
-    public DoubleSetting hudY = new DoubleSetting("HUD Y", "Позиция HUD по вертикали (от верхнего края)", 50.0, 0.0, 1080.0);
+    public DoubleSetting hudX = new DoubleSetting("HUD X", "Позиция HUD по X", 50.0, 0.0, 1920.0);
+    public DoubleSetting hudY = new DoubleSetting("HUD Y", "Позиция HUD по Y", 50.0, 0.0, 1080.0);
 
-    // Для интерполяции между кадрами
     private float interpYaw, interpPitch;
     private float lastYaw, lastPitch;
     private boolean needsInterp = false;
@@ -58,6 +58,7 @@ public class AimbotModule {
         settings.add(dynamicSpeed);
         settings.add(randomPoint);
         settings.add(saccade);
+        settings.add(humanization);
         settings.add(gcd);
         settings.add(jitter);
         settings.add(randomSpeedMin);
@@ -109,7 +110,6 @@ public class AimbotModule {
         float yawDelta = MathHelper.wrapDegrees(targetYaw - currentYaw);
         float pitchDelta = MathHelper.wrapDegrees(targetPitch - currentPitch);
 
-        // ИСПРАВЛЕНО: используем .floatValue() для объектов Double
         float currentSpeed = aimSpeed.get().floatValue();
         if (Math.abs(yawDelta) > 30) currentSpeed *= dynamicSpeed.get().floatValue();
         
@@ -117,6 +117,9 @@ public class AimbotModule {
             float rand = randomSpeedMin.get().floatValue() + random.nextFloat() * (randomSpeedMax.get().floatValue() - randomSpeedMin.get().floatValue());
             currentSpeed *= rand;
         }
+
+        // Учитываем humanization (замедляем если включено)
+        currentSpeed *= (1.0f - humanization.get().floatValue() * 0.5f);
 
         float logNudgeYaw = (float) (Math.log(1 + Math.abs(yawDelta)) * aimStrength.get());
         float logNudgePitch = (float) (Math.log(1 + Math.abs(pitchDelta)) * aimStrength.get());
@@ -142,7 +145,6 @@ public class AimbotModule {
         float stepYaw = yawDelta * factor * Math.signum(yawDelta) * logNudgeYaw;
         float stepPitch = pitchDelta * factor * Math.signum(pitchDelta) * logNudgePitch;
 
-        // ИСПРАВЛЕНО: убраны prevYaw / prevPitch
         lastYaw = currentYaw;
         lastPitch = currentPitch;
         interpYaw = currentYaw + stepYaw;
