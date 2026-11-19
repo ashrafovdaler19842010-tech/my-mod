@@ -25,16 +25,16 @@ public class AimbotModule {
     public DoubleSetting fov = new DoubleSetting("FOV", "Угол обзора (до 360°)", 120.0, 10.0, 360.0);
     public BoolSetting ignoreWalls = new BoolSetting("Ignore Walls", "Бить сквозь стены", false);
 
-    // --- Скорость и плавность ---
-    public DoubleSetting aimSpeed = new DoubleSetting("Aim Speed", "Скорость наводки", 1.0, 0.1, 3.0);
-    public DoubleSetting aimStrength = new DoubleSetting("Aim Strength", "Сила притяжения", 0.15, 0.01, 1.0);
-    public DoubleSetting smoothness = new DoubleSetting("Smoothness", "Плавность (0.1 быстро, 0.9 плавно)", 0.4, 0.1, 0.9);
+    // --- Скорость и плавность (Значения по умолчанию сделаны безопасными) ---
+    public DoubleSetting aimSpeed = new DoubleSetting("Aim Speed", "Общая скорость", 1.0, 0.1, 3.0);
+    public DoubleSetting aimStrength = new DoubleSetting("Aim Strength", "Сила притяжения", 0.10, 0.01, 1.0);
+    public DoubleSetting smoothness = new DoubleSetting("Smoothness", "Плавность (0.1 быстро, 0.9 плавно)", 0.65, 0.1, 0.9);
     public DoubleSetting dynamicSpeed = new DoubleSetting("Dynamic Speed", "Ускорение если цель далеко", 1.5, 1.0, 3.0);
     
     // --- Человекоподобность и FunTime ---
     public BoolSetting randomPoint = new BoolSetting("Random Point", "Случайная точка в хитбоксе", true);
     public DoubleSetting saccade = new DoubleSetting("Saccade", "Микро-движения глаз", 0.0, 0.0, 2.0);
-    public DoubleSetting humanization = new DoubleSetting("Humanization", "Задержка реакции (0-1)", 0.0, 0.0, 1.0);
+    public DoubleSetting humanization = new DoubleSetting("Humanization", "Задержка реакции", 0.0, 0.0, 1.0);
     public DoubleSetting gcd = new DoubleSetting("Rotation GCD", "Шаг мыши (обход Grim)", 0.0, 0.0, 5.0);
     public DoubleSetting jitter = new DoubleSetting("Jitter", "Случайное дрожание", 0.0, 0.0, 5.0);
     public DoubleSetting randomSpeedMin = new DoubleSetting("Rand Speed Min", "Мин. рандом скорость", 0.8, 0.1, 3.0);
@@ -44,8 +44,10 @@ public class AimbotModule {
     public DoubleSetting hudX = new DoubleSetting("HUD X", "Позиция HUD по X", 50.0, 0.0, 1920.0);
     public DoubleSetting hudY = new DoubleSetting("HUD Y", "Позиция HUD по Y", 50.0, 0.0, 1080.0);
 
-    private float interpYaw, interpPitch;
-    private float lastYaw, lastPitch;
+    private float targetYaw = 0;
+    private float targetPitch = 0;
+    private float lastYaw = 0;
+    private float lastPitch = 0;
     private boolean needsInterp = false;
 
     public AimbotModule() {
@@ -79,6 +81,7 @@ public class AimbotModule {
             return;
         }
 
+        // 1. Выбираем точку наведения
         Vec3d targetPos;
         if (randomPoint.get()) {
             Box box = target.getBoundingBox();
@@ -96,69 +99,41 @@ public class AimbotModule {
             );
         }
 
+        // 2. Считаем углы
         double dx = targetPos.x - mc.player.getX();
         double dy = targetPos.y - (mc.player.getY() + mc.player.getStandingEyeHeight());
         double dz = targetPos.z - mc.player.getZ();
         double dist = Math.sqrt(dx * dx + dz * dz);
 
-        float targetYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90f;
-        float targetPitch = (float) -Math.toDegrees(Math.atan2(dy, dist));
+        float calcYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90f;
+        float calcPitch = (float) -Math.toDegrees(Math.atan2(dy, dist));
 
-        float currentYaw = mc.player.getYaw();
-        float currentPitch = mc.player.getPitch();
+        // 3. Сглаживаем вход (Humanization)
+        float factor = (1.0f - smoothness.get().floatValue());
+        targetYaw = MathHelper.lerp(factor, mc.player.getYaw(), calcYaw);
+        targetPitch = MathHelper.lerp(factor, mc.player.getPitch(), calcPitch);
 
-        float yawDelta = MathHelper.wrapDegrees(targetYaw - currentYaw);
-        float pitchDelta = MathHelper.wrapDegrees(targetPitch - currentPitch);
-
-        float currentSpeed = aimSpeed.get().floatValue();
-        if (Math.abs(yawDelta) > 30) currentSpeed *= dynamicSpeed.get().floatValue();
+        // 4. Проверка на рывок (если угол слишком большой, режем шаг)
+        float yawDelta = MathHelper.wrapDegrees(targetYaw - mc.player.getYaw());
+        float pitchDelta = MathHelper.wrapDegrees(targetPitch - mc.player.getPitch());
         
-        if (randomSpeedMax.get() > randomSpeedMin.get()) {
-            float rand = randomSpeedMin.get().floatValue() + random.nextFloat() * (randomSpeedMax.get().floatValue() - randomSpeedMin.get().floatValue());
-            currentSpeed *= rand;
-        }
+        if (Math.abs(yawDelta) > 180) yawDelta = MathHelper.wrapDegrees(yawDelta);
 
-        // Учитываем humanization (замедляем если включено)
-        currentSpeed *= (1.0f - humanization.get().floatValue() * 0.5f);
-
-        float logNudgeYaw = (float) (Math.log(1 + Math.abs(yawDelta)) * aimStrength.get());
-        float logNudgePitch = (float) (Math.log(1 + Math.abs(pitchDelta)) * aimStrength.get());
-        
-        logNudgeYaw = MathHelper.clamp(logNudgeYaw, 0, 45f);
-        logNudgePitch = MathHelper.clamp(logNudgePitch, 0, 45f);
-
-        if (gcd.get() > 0.01) {
-            logNudgeYaw = (float) (Math.round(logNudgeYaw / gcd.get()) * gcd.get());
-            logNudgePitch = (float) (Math.round(logNudgePitch / gcd.get()) * gcd.get());
-        }
-        if (jitter.get() > 0.01) {
-            logNudgeYaw += (float) ((random.nextDouble() - 0.5) * jitter.get());
-            logNudgePitch += (float) ((random.nextDouble() - 0.5) * jitter.get());
-        }
-        if (saccade.get() > 0.01) {
-            logNudgeYaw += (float) (Math.sin(System.currentTimeMillis() / 50.0) * saccade.get());
-            logNudgePitch += (float) (Math.cos(System.currentTimeMillis() / 50.0) * saccade.get());
-        }
-
-        float factor = (1.0f - smoothness.get().floatValue()) * currentSpeed;
-        
-        float stepYaw = yawDelta * factor * Math.signum(yawDelta) * logNudgeYaw;
-        float stepPitch = pitchDelta * factor * Math.signum(pitchDelta) * logNudgePitch;
-
-        lastYaw = currentYaw;
-        lastPitch = currentPitch;
-        interpYaw = currentYaw + stepYaw;
-        interpPitch = currentPitch + stepPitch;
+        lastYaw = mc.player.getYaw();
+        lastPitch = mc.player.getPitch();
         needsInterp = true;
 
-        mc.player.setYaw(interpYaw);
-        mc.player.setPitch(interpPitch);
+        // Применяем на сервер (Minecraft сам отправит пакет)
+        mc.player.setYaw(mc.player.getYaw() + yawDelta * 0.2f * aimSpeed.get().floatValue());
+        mc.player.setPitch(mc.player.getPitch() + pitchDelta * 0.2f * aimSpeed.get().floatValue());
     }
 
+    // Этот метод вызывается каждый кадр рендера для плавности
     public void applyInterpolation(float tickDelta) {
         if (!needsInterp || mc.player == null) return;
-        float smoothYaw = MathHelper.lerp(tickDelta, lastYaw, interpYaw);
-        float smoothPitch = MathHelper.lerp(tickDelta, lastPitch, interpPitch);
+        // Плавно интерполируем между прошлым и текущим углом
+        float smoothYaw = MathHelper.lerp(tickDelta, lastYaw, mc.player.getYaw());
+        float smoothPitch = MathHelper.lerp(tickDelta, lastPitch, mc.player.getPitch());
         mc.player.setYaw(smoothYaw);
         mc.player.setPitch(smoothPitch);
     }
