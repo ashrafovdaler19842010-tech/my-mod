@@ -11,7 +11,10 @@ public class DoubleSetting extends Setting<Double> {
 
     @Override
     public void set(Double newValue) {
-        // Ограничиваем значение рамками min и max
         this.value = Math.max(min, Math.min(max, newValue));
+    }
+
+    public String getFormattedValue() {
+        return String.format("%.2f", value);
     }
 }
