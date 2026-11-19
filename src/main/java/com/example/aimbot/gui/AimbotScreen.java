@@ -36,7 +36,6 @@ public class AimbotScreen extends Screen {
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        // Фон (SystemDLC)
         context.fill(startX, startY, startX + PANEL_W, startY + PANEL_H, BG);
         context.fill(startX, startY, startX + PANEL_W, startY + 2, ACCENT);
         context.drawTextWithShadow(textRenderer, "§lAIMBOT CONFIG", startX + 10, startY + 10, ACCENT);
@@ -46,12 +45,14 @@ public class AimbotScreen extends Screen {
         context.fill(startX + 5, topY, startX + PANEL_W - 5, topY + 20, 0xFF222233);
         context.drawTextWithShadow(textRenderer, "§lAim Assist", startX + 10, topY + 6, TEXT_COLOR);
         
-        // Кнопка вкл/выкл
         String state = module.enabled ? "§aON" : "§cOFF";
         context.drawTextWithShadow(textRenderer, state, startX + PANEL_W - 90, topY + 6, TEXT_COLOR);
         
-        // Кнопка бинда
-        String bindStr = isBindingKey ? "§e[BINDING...]" : "§7[" + InputUtil.getKeyName(module.aimbotKey) + "]";
+        // ИСПРАВЛЕНА ЭТА СТРОКА: используем GLFW для получения имени клавиши
+        String keyName = GLFW.glfwGetKeyName(module.aimbotKey, 0);
+        if (keyName == null) keyName = "Key " + module.aimbotKey;
+        String bindStr = isBindingKey ? "§e[...]" : "§7[" + keyName.toUpperCase() + "]";
+        
         context.drawTextWithShadow(textRenderer, bindStr, startX + PANEL_W - 50, topY + 6, TEXT_COLOR);
 
         // Рисуем настройки
@@ -61,14 +62,12 @@ public class AimbotScreen extends Screen {
             context.drawTextWithShadow(textRenderer, setting.name, startX + 10, y + 4, TEXT_COLOR);
 
             if (setting instanceof DoubleSetting ds) {
-                // Ползунок
                 int sliderX = startX + 150;
                 int sliderW = 150;
                 context.fill(sliderX, y + 6, sliderX + sliderW, y + 10, 0xFF000000);
                 double percent = (ds.get() - ds.min) / (ds.max - ds.min);
                 context.fill(sliderX, y + 6, sliderX + (int)(sliderW * percent), y + 10, ACCENT);
                 
-                // Кружок
                 int circleX = sliderX + (int)(sliderW * percent);
                 context.fill(circleX - 2, y + 4, circleX + 2, y + 12, 0xFFFFFFFF);
                 
@@ -82,7 +81,6 @@ public class AimbotScreen extends Screen {
                 String valStr = es.get().name();
                 context.drawTextWithShadow(textRenderer, valStr, startX + PANEL_W - 40 - textRenderer.getWidth(valStr), y + 4, 0xAAAAAA);
             }
-
             y += 20;
         }
         super.render(context, mouseX, mouseY, delta);
@@ -90,7 +88,6 @@ public class AimbotScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        // Клик по Верхней панели (Вкл/Выкл и Бинд)
         int topY = startY + 30;
         if (mouseY >= topY && mouseY <= topY + 20) {
             if (mouseX >= startX + PANEL_W - 90 && mouseX <= startX + PANEL_W - 60) {
@@ -105,7 +102,6 @@ public class AimbotScreen extends Screen {
 
         if (isBindingKey) return true;
 
-        // Клик по настройкам
         int y = startY + 60;
         for (Setting<?> setting : module.settings) {
             if (mouseX >= startX + 5 && mouseX <= startX + PANEL_W - 5 && mouseY >= y && mouseY <= y + 16) {
@@ -114,7 +110,6 @@ public class AimbotScreen extends Screen {
                 } else if (setting instanceof EnumSetting<?> es) {
                     es.next();
                 } else if (setting instanceof DoubleSetting ds && button == 0) {
-                    // Начинаем тянуть ползунок
                     draggingSlider = ds;
                     updateSlider(ds, mouseX);
                 }
