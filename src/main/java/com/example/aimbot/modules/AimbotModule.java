@@ -90,11 +90,12 @@ public class AimbotModule {
         float pitchDelta = MathHelper.wrapDegrees(targetPitch - currentPitch);
 
         // 2. Считаем скорость (базовая + динамическая + рандом)
-        float currentSpeed = (float) aimSpeed.get();
+        // ИСПРАВЛЕНО: используем .floatValue() для объектов Double
+        float currentSpeed = aimSpeed.get().floatValue();
         
         // Если цель далеко по градусам, ускоряемся
         if (Math.abs(yawDelta) > 30) {
-            currentSpeed *= (float) dynamicSpeed.get();
+            currentSpeed *= dynamicSpeed.get().floatValue();
         }
         
         // Рандомизация скорости каждый тик
@@ -120,11 +121,7 @@ public class AimbotModule {
         float stepYaw = MathHelper.clamp(yawDelta * factor, -45f, 45f);
         float stepPitch = MathHelper.clamp(pitchDelta * factor, -45f, 45f);
 
-        // 5. ИНТЕРПОЛЯЦИЯ (Чтобы не дёргалось). 
-        // Сохраняем старый угол для рендера, затем ставим новый.
-        mc.player.prevYaw = mc.player.getYaw();
-        mc.player.prevPitch = mc.player.getPitch();
-
+        // 5. Устанавливаем новые углы (Minecraft сам их интерполирует при рендере)
         mc.player.setYaw(currentYaw + stepYaw);
         mc.player.setPitch(currentPitch + stepPitch);
     }
