@@ -6,6 +6,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
@@ -48,20 +49,25 @@ public class AimbotMod implements ClientModInitializer {
             module.tick();
         });
 
+        WorldRenderEvents.END.register(context -> {
+            if (module.enabled && MinecraftClient.getInstance().player != null) {
+                module.applyInterpolation(context.tickDelta());
+            }
+        });
+
         HudRenderCallback.EVENT.register((context, tickDelta) -> {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc.player == null || mc.options.hudHidden || hudAlpha < 0.01f) return;
 
-            int x = mc.getWindow().getScaledWidth() - 100;
-            int y = mc.getWindow().getScaledHeight() - 30;
+            // Берем позицию из настроек HUD
+            int x = module.hudX.get().intValue();
+            int y = module.hudY.get().intValue();
             
             int alphaInt = (int)(hudAlpha * 255) << 24;
-            context.fill(x, y, x + 90, y + 28, alphaInt | 0x0A0A0F); // Задний фон
-            context.fill(x, y, x + 2, y + 28, alphaInt | 0x7B2FBE); // Фиолетовая полоска
+            context.fill(x, y, x + 90, y + 28, alphaInt | 0x0A0A0F);
+            context.fill(x, y, x + 2, y + 28, alphaInt | 0x7B2FBE);
             
-            // Вывод FPS
-            int fps = mc.getCurrentFps();
-            context.drawTextWithShadow(mc.textRenderer, "FPS: " + fps, x + 8, y + 5, alphaInt | 0xAAAAAA);
+            context.drawTextWithShadow(mc.textRenderer, "FPS: " + mc.getCurrentFps(), x + 8, y + 5, alphaInt | 0xAAAAAA);
             context.drawTextWithShadow(mc.textRenderer, "§lAIM: ON", x + 8, y + 15, alphaInt | 0xFFFFFF);
         });
     }
