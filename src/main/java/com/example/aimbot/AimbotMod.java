@@ -9,43 +9,52 @@ import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.sound.SoundEvents;
 import org.lwjgl.glfw.GLFW;
 
 public class AimbotMod implements ClientModInitializer {
     public static AimbotModule module;
     public static KeyBinding openGuiKey;
-    public static KeyBinding toggleKey;
 
     @Override
     public void onInitializeClient() {
         module = new AimbotModule();
 
-        // Бинд на открытие GUI (Right Ctrl)
+        // Right Ctrl для GUI
         openGuiKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.aimbot.opengui", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_CONTROL, "Aimbot"
         ));
 
-        // Бинд на вкл/выкл аима (R)
-        toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.aimbot.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_R, "Aimbot"
-        ));
-
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            // Открытие GUI
             while (openGuiKey.wasPressed()) {
                 if (client.currentScreen == null) {
                     client.setScreen(new AimbotScreen(module));
                 }
             }
-            while (toggleKey.wasPressed()) {
-                module.enabled = !module.enabled;
-                if (client.player != null) {
-                    client.player.sendMessage(net.minecraft.text.Text.literal("Aimbot: " + (module.enabled ? "§aON" : "§cOFF")), true);
+
+            // Включение/Выключение по бинду из модуля
+            if (client.player != null && client.currentScreen == null) {
+                // InputUtil.isKeyPressed проверяет, зажата ли кнопка, которую мы забиндили
+                if (InputUtil.isKeyPressed(client.getWindow().getHandle(), module.aimbotKey)) {
+                    module.enabled = !module.enabled;
+                    
+                    // ЗВУК SYSTEM DLC
+                    if (module.enabled) {
+                        client.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_PLING.value(), 1.0f, 2.0f); // Высокий звук (Вкл)
+                    } else {
+                        client.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_BASS.value(), 1.0f, 0.5f); // Низкий звук (Выкл)
+                    }
+
+                    // Костыль, чтобы кнопка не зажималась на несколько тиков
+                    try { Thread.sleep(200); } catch (InterruptedException e) {}
                 }
             }
+
             module.tick();
         });
 
-        // HUD Индикатор
+        // HUD Индикатор (Всегда на экране)
         HudRenderCallback.EVENT.register((context, tickDelta) -> {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc.player == null || mc.options.hudHidden) return;
@@ -54,10 +63,8 @@ public class AimbotMod implements ClientModInitializer {
             int y = mc.getWindow().getScaledHeight() - 30;
             
             context.fill(x, y, x + 70, y + 18, 0xCC0A0A0F);
-            context.fill(x, y, x + 2, y + 18, module.enabled ? 0xFF00FF00 : 0xFFFF0000); // Зеленый если вкл, красный если выкл
+            context.fill(x, y, x + 2, y + 18, module.enabled ? 0xFF00FF00 : 0xFFFF0000);
             context.drawTextWithShadow(mc.textRenderer, "AIM: " + (module.enabled ? "ON" : "OFF"), x + 8, y + 5, 0xFFFFFFFF);
         });
-        
-        System.out.println("Aimbot Mod Loaded! Engine & GUI Ready.");
     }
 }
