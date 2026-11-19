@@ -49,10 +49,11 @@ public class AimbotMod implements ClientModInitializer {
             module.tick();
         });
 
-        // ИСПРАВЛЕНО: Используем MinecraftClient.getInstance().getTickDelta()
+        // ИСПРАВЛЕНО: Используем tickCounter().getTickProgress(false) вместо getTickDelta()
         WorldRenderEvents.END.register(context -> {
             if (module.enabled && MinecraftClient.getInstance().player != null) {
-                module.applyInterpolation(MinecraftClient.getInstance().getTickDelta());
+                float tickDelta = context.tickCounter().getTickProgress(false);
+                module.applyInterpolation(tickDelta);
             }
         });
 
