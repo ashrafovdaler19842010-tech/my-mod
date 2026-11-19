@@ -49,7 +49,7 @@ public class AimbotMod implements ClientModInitializer {
             module.tick();
         });
 
-        // ИСПРАВЛЕНО: Используем tickCounter().getTickProgress(false) вместо getTickDelta()
+        // Вызываем интерполяцию каждый кадр для плавности (ИСПРАВЛЕНО: используем tickCounter)
         WorldRenderEvents.END.register(context -> {
             if (module.enabled && MinecraftClient.getInstance().player != null) {
                 float tickDelta = context.tickCounter().getTickProgress(false);
