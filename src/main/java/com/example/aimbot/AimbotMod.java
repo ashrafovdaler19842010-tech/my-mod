@@ -29,30 +29,22 @@ public class AimbotMod implements ClientModInitializer {
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (openGuiKey.wasPressed()) {
-                if (client.currentScreen == null) {
-                    client.setScreen(new AimbotScreen(module));
-                }
+                if (client.currentScreen == null) client.setScreen(new AimbotScreen(module));
             }
 
             if (client.player != null && client.currentScreen == null) {
-                // Оптимизированный бинд без фризов (проверка раз в 200мс)
                 if (InputUtil.isKeyPressed(client.getWindow().getHandle(), module.aimbotKey)) {
                     if (System.currentTimeMillis() - lastToggleTime > 200) {
                         module.enabled = !module.enabled;
                         lastToggleTime = System.currentTimeMillis();
                         
-                        if (module.enabled) {
-                            client.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_PLING.value(), 1.0f, 2.0f);
-                        } else {
-                            client.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_BASS.value(), 1.0f, 0.5f);
-                        }
+                        if (module.enabled) client.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_PLING.value(), 1.0f, 2.0f);
+                        else client.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_BASS.value(), 1.0f, 0.5f);
                     }
                 }
             }
 
-            // Плавное появление и исчезновение HUD
             hudAlpha = MathHelper.lerp(0.1f, hudAlpha, module.enabled ? 1.0f : 0.0f);
-
             module.tick();
         });
 
@@ -60,14 +52,17 @@ public class AimbotMod implements ClientModInitializer {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc.player == null || mc.options.hudHidden || hudAlpha < 0.01f) return;
 
-            int x = mc.getWindow().getScaledWidth() - 80;
+            int x = mc.getWindow().getScaledWidth() - 100;
             int y = mc.getWindow().getScaledHeight() - 30;
             
-            // Красивый HUD (используем прозрачность)
             int alphaInt = (int)(hudAlpha * 255) << 24;
-            context.fill(x, y, x + 70, y + 18, alphaInt | 0x0A0A0F);
-            context.fill(x, y, x + 2, y + 18, alphaInt | 0x7B2FBE);
-            context.drawTextWithShadow(mc.textRenderer, "AIM: ON", x + 8, y + 5, alphaInt | 0xFFFFFF);
+            context.fill(x, y, x + 90, y + 28, alphaInt | 0x0A0A0F); // Задний фон
+            context.fill(x, y, x + 2, y + 28, alphaInt | 0x7B2FBE); // Фиолетовая полоска
+            
+            // Вывод FPS
+            int fps = mc.getCurrentFps();
+            context.drawTextWithShadow(mc.textRenderer, "FPS: " + fps, x + 8, y + 5, alphaInt | 0xAAAAAA);
+            context.drawTextWithShadow(mc.textRenderer, "§lAIM: ON", x + 8, y + 15, alphaInt | 0xFFFFFF);
         });
     }
 }
