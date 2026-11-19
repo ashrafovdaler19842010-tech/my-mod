@@ -8,4 +8,10 @@ public class DoubleSetting extends Setting<Double> {
         this.min = min;
         this.max = max;
     }
+
+    @Override
+    public void set(Double newValue) {
+        // Ограничиваем значение рамками min и max
+        this.value = Math.max(min, Math.min(max, newValue));
+    }
 }
