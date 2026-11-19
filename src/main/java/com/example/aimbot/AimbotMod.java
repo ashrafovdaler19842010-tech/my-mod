@@ -49,9 +49,10 @@ public class AimbotMod implements ClientModInitializer {
             module.tick();
         });
 
+        // ИСПРАВЛЕНО: Используем MinecraftClient.getInstance().getTickDelta()
         WorldRenderEvents.END.register(context -> {
             if (module.enabled && MinecraftClient.getInstance().player != null) {
-                module.applyInterpolation(context.tickDelta());
+                module.applyInterpolation(MinecraftClient.getInstance().getTickDelta());
             }
         });
 
@@ -59,7 +60,6 @@ public class AimbotMod implements ClientModInitializer {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc.player == null || mc.options.hudHidden || hudAlpha < 0.01f) return;
 
-            // Берем позицию из настроек HUD
             int x = module.hudX.get().intValue();
             int y = module.hudY.get().intValue();
             
