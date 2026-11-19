@@ -14,18 +14,18 @@ public class AimbotScreen extends Screen {
     private static final int BG = 0xE60A0A0F;
     private static final int ACCENT = 0xFF7B2FBE;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
-    private static final int PANEL_W = 440;
-    private static final int PANEL_H = 380;
+    private static final int PANEL_W = 480;
+    private static final int PANEL_H = 420;
 
     private final AimbotModule module;
     private int startX, startY;
     private DoubleSetting draggingSlider = null;
     private boolean isBindingKey = false;
     
-    // Состояние групп
     private boolean expandFilters = true;
     private boolean expandSpeed = true;
     private boolean expandFunTime = true;
+    private boolean expandHuman = true;
 
     public AimbotScreen(AimbotModule module) {
         super(Text.literal("Aimbot GUI"));
@@ -44,6 +44,7 @@ public class AimbotScreen extends Screen {
         context.fill(startX, startY, startX + PANEL_W, startY + 2, ACCENT);
         context.drawTextWithShadow(textRenderer, "§lAIMBOT CONFIG", startX + 10, startY + 10, ACCENT);
 
+        // Верхняя панель
         int topY = startY + 30;
         context.fill(startX + 5, topY, startX + PANEL_W - 5, topY + 20, 0xFF222233);
         context.drawTextWithShadow(textRenderer, "§lAim Assist", startX + 10, topY + 6, TEXT_COLOR);
@@ -63,14 +64,21 @@ public class AimbotScreen extends Screen {
             y = drawSetting(context, module.range, y, mouseX, mouseY);
             y = drawSetting(context, module.fov, y, mouseX, mouseY);
             y = drawSetting(context, module.ignoreWalls, y, mouseX, mouseY);
-            y = drawSetting(context, module.nearestHitbox, y, mouseX, mouseY);
+            y = drawSetting(context, module.randomPoint, y, mouseX, mouseY);
         }
 
         y = drawHeader(context, "Speed & Smoothness", y, expandSpeed, mouseX, mouseY);
         if (expandSpeed) {
             y = drawSetting(context, module.aimSpeed, y, mouseX, mouseY);
-            y = drawSetting(context, module.dynamicSpeed, y, mouseX, mouseY);
+            y = drawSetting(context, module.aimStrength, y, mouseX, mouseY);
             y = drawSetting(context, module.smoothness, y, mouseX, mouseY);
+            y = drawSetting(context, module.dynamicSpeed, y, mouseX, mouseY);
+        }
+
+        y = drawHeader(context, "Humanization", y, expandHuman, mouseX, mouseY);
+        if (expandHuman) {
+            y = drawSetting(context, module.saccade, y, mouseX, mouseY);
+            y = drawSetting(context, module.humanization, y, mouseX, mouseY);
         }
 
         y = drawHeader(context, "FunTime Bypass", y, expandFunTime, mouseX, mouseY);
@@ -94,7 +102,6 @@ public class AimbotScreen extends Screen {
         boolean hovered = mouseX >= startX + 5 && mouseX <= startX + PANEL_W - 5 && mouseY >= y && mouseY <= y + 16;
         context.fill(startX + 15, y, startX + PANEL_W - 5, y + 16, hovered ? 0xFF2A2A38 : 0xFF1A1A24);
         
-        // Подсказка при наведении
         if (hovered) {
             context.drawTooltip(textRenderer, Text.literal(setting.description), mouseX, mouseY);
         }
@@ -111,8 +118,8 @@ public class AimbotScreen extends Screen {
             int circleX = sliderX + (int)(sliderW * percent);
             context.fill(circleX - 2, y + 4, circleX + 2, y + 12, 0xFFFFFFFF);
             
-            // Показываем точное значение
-            String valStr = String.format("%.2f", ds.get());
+            // Отображаем точное значение
+            String valStr = ds.getFormattedValue();
             context.drawTextWithShadow(textRenderer, valStr, startX + PANEL_W - 50, y + 4, 0xAAAAAA);
         } 
         else if (setting instanceof BoolSetting bs) {
@@ -131,29 +138,37 @@ public class AimbotScreen extends Screen {
 
         if (isBindingKey) return true;
 
+        // Заголовки групп
         int y = startY + 60;
-        // Проверка клика по заголовкам групп
         if (mouseY >= y && mouseY <= y + 16) { expandFilters = !expandFilters; return true; }
         if (expandFilters) y += 18 * 5; else y += 18;
         
         if (mouseY >= y && mouseY <= y + 16) { expandSpeed = !expandSpeed; return true; }
-        if (expandSpeed) y += 18 * 4; else y += 18;
+        if (expandSpeed) y += 18 * 5; else y += 18;
         
+        if (mouseY >= y && mouseY <= y + 16) { expandHuman = !expandHuman; return true; }
+        if (expandHuman) y += 18 * 3; else y += 18;
+
         if (mouseY >= y && mouseY <= y + 16) { expandFunTime = !expandFunTime; return true; }
 
-        // Проверка кликов по настройкам
+        // Клики по настройкам
         y = startY + 60;
         y = checkSettingClick(module.range, y, mouseX, mouseY, expandFilters);
         y = checkSettingClick(module.fov, y, mouseX, mouseY, expandFilters);
         y = checkSettingClick(module.ignoreWalls, y, mouseX, mouseY, expandFilters);
-        y = checkSettingClick(module.nearestHitbox, y, mouseX, mouseY, expandFilters);
+        y = checkSettingClick(module.randomPoint, y, mouseX, mouseY, expandFilters);
         
         y = startY + 60 + (expandFilters ? 18*4 : 0) + 18;
         y = checkSettingClick(module.aimSpeed, y, mouseX, mouseY, expandSpeed);
-        y = checkSettingClick(module.dynamicSpeed, y, mouseX, mouseY, expandSpeed);
+        y = checkSettingClick(module.aimStrength, y, mouseX, mouseY, expandSpeed);
         y = checkSettingClick(module.smoothness, y, mouseX, mouseY, expandSpeed);
-        
-        y = startY + 60 + (expandFilters ? 18*4 : 0) + (expandSpeed ? 18*3 : 0) + 18*2;
+        y = checkSettingClick(module.dynamicSpeed, y, mouseX, mouseY, expandSpeed);
+
+        y = startY + 60 + (expandFilters ? 18*4 : 0) + (expandSpeed ? 18*4 : 0) + 18*2;
+        y = checkSettingClick(module.saccade, y, mouseX, mouseY, expandHuman);
+        y = checkSettingClick(module.humanization, y, mouseX, mouseY, expandHuman);
+
+        y = startY + 60 + (expandFilters ? 18*4 : 0) + (expandSpeed ? 18*4 : 0) + (expandHuman ? 18*2 : 0) + 18*3;
         y = checkSettingClick(module.gcd, y, mouseX, mouseY, expandFunTime);
         y = checkSettingClick(module.jitter, y, mouseX, mouseY, expandFunTime);
         y = checkSettingClick(module.randomSpeedMin, y, mouseX, mouseY, expandFunTime);
@@ -163,10 +178,14 @@ public class AimbotScreen extends Screen {
     }
 
     private int checkSettingClick(Setting<?> setting, int y, double mouseX, double mouseY, boolean expanded) {
-        if (!expanded) return y; // Если группа свернута, пропускаем
+        if (!expanded) return y;
         if (mouseX >= startX + 15 && mouseX <= startX + PANEL_W - 5 && mouseY >= y && mouseY <= y + 16) {
             if (setting instanceof BoolSetting bs) bs.toggle();
-            else if (setting instanceof DoubleSetting ds) { draggingSlider = ds; updateSlider(ds, mouseX); }
+            else if (setting instanceof DoubleSetting ds) {
+                // Исправлен баг с переключением: теперь при клике начинаем тянуть именно этот ползунок
+                draggingSlider = ds; 
+                updateSlider(ds, mouseX);
+            }
         }
         return y + 18;
     }
