@@ -12,6 +12,7 @@ import java.util.List;
 public class AimbotModule {
     public final MinecraftClient mc = MinecraftClient.getInstance();
     public boolean enabled = false;
+    public int aimbotKey = 82;
     
     // Список для GUI
     public final List<Setting<?>> settings = new ArrayList<>();
