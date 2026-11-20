@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "aimbot",
+  "version": "${version}",
+  "name": "Meteor Aimbot Addon",
+  "description": "Advanced aimbot based on Meteorist.",
+  "authors": ["you"],
+  "environment": "client",
+  "entrypoints": {
+    "meteor": ["com.example.aimbot.AimbotMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.8",
+    "meteor-client": "*"
+  }
+}
