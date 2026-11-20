@@ -101,12 +101,12 @@ public class ZAimbot extends Module {
     public Module fromTag(NbtCompound tag) {
         super.fromTag(tag);
         trajectories.clear();
-        NbtList list = tag.getList("trajectories", NbtElement.COMPOUND_TYPE);
+        NbtList list = tag.getListOrEmpty("trajectories");
         for (int i = 0; i < list.size(); i++) {
-            NbtCompound tagI = list.getCompound(i);
+            NbtCompound tagI = list.getCompoundOrEmpty(i);
             AimTrajectory trajectory = new AimTrajectory();
             if (tagI.contains("trajectory")) trajectory.fromTag(tagI.getCompound("trajectory"));
-            trajectories.add(trajectory);
+            trajectory.fromTag(tagI.getCompoundOrEmpty("trajectory"));
         }
         return this;
     }
